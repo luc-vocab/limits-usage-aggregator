@@ -6,6 +6,7 @@ cc_test(
         "fix_message_tests.cpp",
         "aggregation_tests.cpp",
         "integration_tests.cpp",
+        "integration_test_option_underlyer_count.cpp",
     ],
     deps = [
         "//src/aggregation",
