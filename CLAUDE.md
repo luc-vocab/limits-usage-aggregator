@@ -6,29 +6,38 @@ A high-performance aggregation engine for pre-trade risk checks that processes F
 
 ## Build System
 
-### Build Tool
+### Requirements
 - **Build System**: Bazel
+- **Compiler**: GCC 13.2.0
 - **Standard**: C++17
+- **Build Environment**: Docker (required - exact GCC version and Bazel not available locally)
 
-### Bazel Commands
+### Docker Build Commands
 ```bash
+# Build the Docker image (first time or after Dockerfile changes)
+docker build -t aggregator-build .
+
 # Build all targets
-bazel build //...
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel build //...
 
 # Run all tests
-bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner
+
+# Run tests with verbose output
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_output=all
 
 # Build with debug symbols
-bazel build --config=debug //...
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel build --config=debug //...
 
 # Clean build artifacts
-bazel clean
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel clean
 ```
 
 ### Project Structure
 ```
 /
 ├── CLAUDE.md
+├── Dockerfile
 ├── MODULE.bazel
 ├── BUILD.bazel
 ├── .bazelrc
@@ -244,13 +253,13 @@ NewOrderSingle sent
 ### Running Tests
 ```bash
 # Run all tests
-bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner
 
 # Run tests with verbose output
-bazel test //tests:test_runner --test_output=all
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_output=all
 
 # Run with test filter (via --test_arg)
-bazel test //tests:test_runner --test_arg=--filter=aggregation
+docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_arg=--filter=aggregation
 ```
 
 ## Code Style
