@@ -1,15 +1,17 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
 cc_library(
     name = "test_framework",
     hdrs = ["test_framework.hpp"],
 )
 
-cc_test(
-    name = "test_runner",
-    srcs = [
+# These files are #included by test_runner.cpp (unity build pattern)
+cc_library(
+    name = "test_sources",
+    textual_hdrs = [
         "aggregation_tests.cpp",
         "fix_message_tests.cpp",
         "integration_tests.cpp",
-        "test_runner.cpp",
     ],
     deps = [
         ":test_framework",
@@ -17,5 +19,14 @@ cc_test(
         "//src/engine",
         "//src/fix",
         "//src/metrics",
+    ],
+)
+
+cc_test(
+    name = "test_runner",
+    srcs = ["test_runner.cpp"],
+    copts = ["-Itests"],
+    deps = [
+        ":test_sources",
     ],
 )
