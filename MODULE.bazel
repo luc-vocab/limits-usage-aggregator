@@ -1,0 +1,6 @@
+module(
+    name = "limits_usage_aggregator",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.0.9")

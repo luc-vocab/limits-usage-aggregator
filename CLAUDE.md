@@ -6,46 +6,60 @@ A high-performance aggregation engine for pre-trade risk checks that processes F
 
 ## Build System
 
-### Compiler Requirements
+### Build Tool
+- **Build System**: Bazel
 - **Standard**: C++17
-- **Compiler**: GCC 13.2.0
-- **Build Environment**: Docker (required - exact GCC version not available locally)
 
-### Docker Build Commands
+### Bazel Commands
 ```bash
-# Build the project
-docker run --rm -v $(pwd):/src -w /src gcc:13.2.0 g++ -std=c++17 -O2 -Wall -Wextra -o bin/aggregator src/*.cpp
+# Build all targets
+bazel build //...
 
-# Run regression tests
-docker run --rm -v $(pwd):/src -w /src gcc:13.2.0 ./bin/test_runner
+# Run all tests
+bazel test //tests:test_runner
+
+# Build with debug symbols
+bazel build --config=debug //...
+
+# Clean build artifacts
+bazel clean
 ```
 
 ### Project Structure
 ```
 /
 ├── CLAUDE.md
-├── Dockerfile
-├── Makefile
+├── MODULE.bazel
+├── BUILD.bazel
+├── .bazelrc
 ├── src/
 │   ├── fix/
+│   │   ├── BUILD.bazel
 │   │   ├── fix_types.hpp       # FIX tag definitions
 │   │   ├── fix_messages.hpp    # FIX message structures
 │   │   └── fix_parser.hpp      # FIX message parsing
 │   ├── aggregation/
+│   │   ├── BUILD.bazel
 │   │   ├── aggregation_core.hpp    # Generic aggregation engine
 │   │   ├── aggregation_traits.hpp  # Compile-time customization
 │   │   └── grouping.hpp            # Grouping level definitions
 │   ├── metrics/
+│   │   ├── BUILD.bazel
 │   │   ├── delta_metrics.hpp       # Gross/net delta tracking
 │   │   ├── order_count_metrics.hpp # Order counting metrics
 │   │   └── notional_metrics.hpp    # Notional value tracking
-│   └── main.cpp
+│   └── engine/
+│       ├── BUILD.bazel
+│       ├── order_state.hpp         # Order state tracking
+│       └── risk_engine.hpp         # Risk engine
 ├── tests/
+│   ├── BUILD.bazel
+│   ├── test_framework.hpp
 │   ├── test_runner.cpp
 │   ├── fix_message_tests.cpp
 │   ├── aggregation_tests.cpp
 │   └── integration_tests.cpp
-└── bin/
+└── bazel-*                         # Bazel output directories (gitignored)
 ```
 
 ## FIX Message Types
@@ -205,7 +219,6 @@ NewOrderSingle sent
 ## Testing Requirements
 
 ### Regression Test Coverage
-All tests run via Docker to ensure consistent GCC 13.2.0 environment.
 
 1. **FIX Message Tests**
    - Parse/serialize all outgoing message types
@@ -231,10 +244,13 @@ All tests run via Docker to ensure consistent GCC 13.2.0 environment.
 ### Running Tests
 ```bash
 # Run all tests
-make docker-test
+bazel test //tests:test_runner
 
-# Run specific test suite
-docker run --rm -v $(pwd):/src -w /src gcc:13.2.0 ./bin/test_runner --filter="aggregation"
+# Run tests with verbose output
+bazel test //tests:test_runner --test_output=all
+
+# Run with test filter (via --test_arg)
+bazel test //tests:test_runner --test_arg=--filter=aggregation
 ```
 
 ## Code Style

@@ -1,0 +1,15 @@
+# C++ standard
+build --cxxopt=-std=c++17
+
+# Compiler warnings
+build --cxxopt=-Wall
+build --cxxopt=-Wextra
+build --cxxopt=-Wpedantic
+
+# Optimization (override with --compilation_mode=dbg for debug builds)
+build --cxxopt=-O2
+
+# Debug configuration
+build:debug --compilation_mode=dbg
+build:debug --cxxopt=-g
+build:debug --cxxopt=-DDEBUG

@@ -1,0 +1,21 @@
+cc_library(
+    name = "test_framework",
+    hdrs = ["test_framework.hpp"],
+)
+
+cc_test(
+    name = "test_runner",
+    srcs = [
+        "aggregation_tests.cpp",
+        "fix_message_tests.cpp",
+        "integration_tests.cpp",
+        "test_runner.cpp",
+    ],
+    deps = [
+        ":test_framework",
+        "//src/aggregation",
+        "//src/engine",
+        "//src/fix",
+        "//src/metrics",
+    ],
+)
