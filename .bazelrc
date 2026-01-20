@@ -1,3 +1,6 @@
+# Output directory settings - keep build outputs outside project directory
+build --symlink_prefix=/tmp/bazel-
+
 # C++ standard
 build --cxxopt=-std=c++17
 
