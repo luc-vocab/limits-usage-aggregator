@@ -17,20 +17,23 @@ A high-performance aggregation engine for pre-trade risk checks that processes F
 # Build the Docker image (first time or after Dockerfile changes)
 docker build -t aggregator-build .
 
+# Common docker run options (run as current user to avoid root-owned files)
+# All commands below use: --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un)
+
 # Build all targets
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel build //...
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel build //...
 
 # Run all tests
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner
 
 # Run tests with verbose output
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_output=all
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_output=all
 
 # Build with debug symbols
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel build --config=debug //...
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel build --config=debug //...
 
 # Clean build artifacts
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel clean
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel clean
 ```
 
 ### Project Structure
@@ -253,13 +256,13 @@ NewOrderSingle sent
 ### Running Tests
 ```bash
 # Run all tests
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner
 
 # Run tests with verbose output
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_output=all
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_output=all
 
 # Run with test filter (via --test_arg)
-docker run --rm -v $(pwd):/src -w /src aggregator-build bazel test //tests:test_runner --test_arg=--filter=aggregation
+docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_arg=--filter=aggregation
 ```
 
 ## Code Style
