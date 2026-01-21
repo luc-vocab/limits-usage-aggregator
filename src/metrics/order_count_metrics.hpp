@@ -4,6 +4,12 @@
 #include "../fix/fix_types.hpp"
 #include <unordered_set>
 
+// Forward declarations
+namespace engine {
+    struct TrackedOrder;
+    class OrderBook;
+}
+
 namespace metrics {
 
 // ============================================================================
@@ -20,7 +26,32 @@ private:
     aggregation::UnderlyerInstrumentCountBucket quoted_instruments_;
 
 public:
-    // Add an order
+    // ========================================================================
+    // Generic metric interface (used by template RiskAggregationEngine)
+    // ========================================================================
+
+    // Called when order is sent (PENDING_NEW state)
+    void on_order_added(const engine::TrackedOrder& order);
+
+    // Called when order is fully removed (nack, cancel, full fill)
+    void on_order_removed(const engine::TrackedOrder& order);
+
+    // Called when order is modified (update ack) - no-op for order count
+    void on_order_updated(const engine::TrackedOrder& /*order*/,
+                          double /*old_delta_exposure*/, double /*old_notional*/) {
+        // Order count doesn't change on update
+    }
+
+    // Called on partial fill - no-op for order count
+    void on_partial_fill(const engine::TrackedOrder& /*order*/,
+                         double /*filled_delta_exposure*/, double /*filled_notional*/) {
+        // Order count doesn't change on partial fill
+    }
+
+    // ========================================================================
+    // Legacy interface (for backward compatibility and direct usage)
+    // ========================================================================
+
     void add_order(const std::string& symbol, const std::string& underlyer, fix::Side side) {
         aggregation::InstrumentSideKey key{symbol, static_cast<int>(side)};
         per_instrument_side_.add(key, 1);
@@ -34,7 +65,6 @@ public:
         }
     }
 
-    // Remove an order
     void remove_order(const std::string& symbol, const std::string& underlyer, fix::Side side) {
         aggregation::InstrumentSideKey key{symbol, static_cast<int>(side)};
         per_instrument_side_.remove(key, 1);
@@ -59,7 +89,10 @@ public:
         }
     }
 
+    // ========================================================================
     // Accessors
+    // ========================================================================
+
     int64_t bid_order_count(const std::string& symbol) const {
         return per_instrument_side_.get(aggregation::InstrumentSideKey{symbol, static_cast<int>(fix::Side::BID)});
     }
@@ -76,7 +109,6 @@ public:
         return quoted_instruments_.get(aggregation::UnderlyerKey{underlyer});
     }
 
-    // Get all underlyers with quoted instruments
     std::vector<aggregation::UnderlyerKey> underlyers() const {
         return quoted_instruments_.keys();
     }
@@ -87,5 +119,20 @@ public:
         quoted_instruments_.clear();
     }
 };
+
+} // namespace metrics
+
+// Include TrackedOrder definition and implement generic interface
+#include "../engine/order_state.hpp"
+
+namespace metrics {
+
+inline void OrderCountMetrics::on_order_added(const engine::TrackedOrder& order) {
+    add_order(order.symbol, order.underlyer, order.side);
+}
+
+inline void OrderCountMetrics::on_order_removed(const engine::TrackedOrder& order) {
+    remove_order(order.symbol, order.underlyer, order.side);
+}
 
 } // namespace metrics
