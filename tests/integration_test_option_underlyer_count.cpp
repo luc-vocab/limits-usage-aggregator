@@ -4,6 +4,7 @@
 #include <variant>
 #include <functional>
 #include "../src/engine/risk_engine.hpp"
+#include "../src/engine/risk_engine_with_limits.hpp"
 #include "../src/fix/fix_parser.hpp"
 
 using namespace engine;
@@ -129,12 +130,19 @@ OrderStep unsolicited_cancel(const std::string& order_id) {
 // ============================================================================
 // Underlyer Order Count Limit Engine
 // ============================================================================
+//
+// This class demonstrates the use of RiskAggregationEngineWithLimits for
+// tracking and enforcing limits on quoted instruments per underlyer.
+//
 
 class UnderlyerLimitEngine {
 private:
-    RiskAggregationEngine risk_engine_;
-    std::unordered_map<std::string, int64_t> underlyer_limits_;
-    int64_t default_limit_ = 10;
+    // Use the new engine with limits support
+    RiskAggregationEngineWithLimits<
+        metrics::DeltaMetrics,
+        metrics::OrderCountMetrics,
+        metrics::NotionalMetrics
+    > risk_engine_;
 
     // Track pending orders by ID for message construction
     std::unordered_map<std::string, NewOrderSingle> pending_orders_;
@@ -145,16 +153,15 @@ private:
 
 public:
     void set_underlyer_limit(const std::string& underlyer, int64_t limit) {
-        underlyer_limits_[underlyer] = limit;
+        risk_engine_.set_quoted_instruments_limit(underlyer, static_cast<double>(limit));
     }
 
     void set_default_limit(int64_t limit) {
-        default_limit_ = limit;
+        risk_engine_.set_default_quoted_instruments_limit(static_cast<double>(limit));
     }
 
     int64_t get_limit(const std::string& underlyer) const {
-        auto it = underlyer_limits_.find(underlyer);
-        return (it != underlyer_limits_.end()) ? it->second : default_limit_;
+        return static_cast<int64_t>(risk_engine_.get_quoted_instruments_limit(underlyer));
     }
 
     int64_t get_open_order_count(const std::string& underlyer) const {
@@ -163,17 +170,13 @@ public:
 
     // Check if a symbol is already quoted (has at least one order)
     bool is_instrument_quoted(const std::string& symbol) const {
-        return (risk_engine_.bid_order_count(symbol) + risk_engine_.ask_order_count(symbol)) > 0;
+        return risk_engine_.is_instrument_quoted(symbol);
     }
 
     // Check if adding an order on a specific instrument would breach the limit
+    // Uses the new would_breach_quoted_instruments_limit from RiskAggregationEngineWithLimits
     bool would_breach_limit(const std::string& underlyer, const std::string& symbol) const {
-        // If this instrument is already quoted, adding another order won't increase count
-        if (is_instrument_quoted(symbol)) {
-            return false;
-        }
-        // Otherwise, we'd add a new instrument - check if we're at limit
-        return get_open_order_count(underlyer) >= get_limit(underlyer);
+        return risk_engine_.would_breach_quoted_instruments_limit(underlyer, symbol);
     }
 
     // Process an order step, return true if approved, false if rejected due to limit
@@ -529,11 +532,12 @@ public:
         return result;
     }
 
-    const RiskAggregationEngine& risk_engine() const { return risk_engine_; }
-    RiskAggregationEngine& risk_engine() { return risk_engine_; }
+    // Return const reference to the underlying engine (with limits)
+    const auto& risk_engine() const { return risk_engine_; }
+    auto& risk_engine() { return risk_engine_; }
 
     void clear() {
-        risk_engine_.clear();
+        risk_engine_.clear();  // This also clears all limits
         pending_orders_.clear();
         cancel_request_map_.clear();
         replace_request_map_.clear();
