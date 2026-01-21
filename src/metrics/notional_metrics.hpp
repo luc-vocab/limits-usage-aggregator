@@ -133,3 +133,38 @@ inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order,
 }
 
 } // namespace metrics
+
+// ============================================================================
+// AccessorMixin specialization for NotionalMetrics
+// ============================================================================
+//
+// This specialization provides CRTP-based accessor methods for engines
+// that include NotionalMetrics.
+//
+
+#include "../engine/accessor_mixin.hpp"
+
+namespace engine {
+
+template<typename Derived>
+class AccessorMixin<Derived, metrics::NotionalMetrics> {
+protected:
+    const metrics::NotionalMetrics& notional_metrics_() const {
+        return static_cast<const Derived*>(this)->template get_metric<metrics::NotionalMetrics>();
+    }
+
+public:
+    double global_notional() const {
+        return notional_metrics_().global_notional();
+    }
+
+    double strategy_notional(const std::string& strategy_id) const {
+        return notional_metrics_().strategy_notional(strategy_id);
+    }
+
+    double portfolio_notional(const std::string& portfolio_id) const {
+        return notional_metrics_().portfolio_notional(portfolio_id);
+    }
+};
+
+} // namespace engine

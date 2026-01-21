@@ -11,5 +11,7 @@ cc_library(
     ],
     deps = [
         "//src/aggregation",
+        "//src/engine:accessor_mixin",
+        "//src/engine:order_state",
     ],
 )

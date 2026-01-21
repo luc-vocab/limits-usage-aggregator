@@ -136,3 +136,42 @@ inline void OrderCountMetrics::on_order_removed(const engine::TrackedOrder& orde
 }
 
 } // namespace metrics
+
+// ============================================================================
+// AccessorMixin specialization for OrderCountMetrics
+// ============================================================================
+//
+// This specialization provides CRTP-based accessor methods for engines
+// that include OrderCountMetrics.
+//
+
+#include "../engine/accessor_mixin.hpp"
+
+namespace engine {
+
+template<typename Derived>
+class AccessorMixin<Derived, metrics::OrderCountMetrics> {
+protected:
+    const metrics::OrderCountMetrics& order_count_metrics_() const {
+        return static_cast<const Derived*>(this)->template get_metric<metrics::OrderCountMetrics>();
+    }
+
+public:
+    int64_t bid_order_count(const std::string& symbol) const {
+        return order_count_metrics_().bid_order_count(symbol);
+    }
+
+    int64_t ask_order_count(const std::string& symbol) const {
+        return order_count_metrics_().ask_order_count(symbol);
+    }
+
+    int64_t total_order_count(const std::string& symbol) const {
+        return order_count_metrics_().total_order_count(symbol);
+    }
+
+    int64_t quoted_instruments_count(const std::string& underlyer) const {
+        return order_count_metrics_().quoted_instruments_count(underlyer);
+    }
+};
+
+} // namespace engine

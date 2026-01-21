@@ -135,3 +135,50 @@ inline void DeltaMetrics::on_partial_fill(const engine::TrackedOrder& order,
 }
 
 } // namespace metrics
+
+// ============================================================================
+// AccessorMixin specialization for DeltaMetrics
+// ============================================================================
+//
+// This specialization provides CRTP-based accessor methods for engines
+// that include DeltaMetrics.
+//
+
+#include "../engine/accessor_mixin.hpp"
+
+namespace engine {
+
+template<typename Derived>
+class AccessorMixin<Derived, metrics::DeltaMetrics> {
+protected:
+    const metrics::DeltaMetrics& delta_metrics_() const {
+        return static_cast<const Derived*>(this)->template get_metric<metrics::DeltaMetrics>();
+    }
+
+public:
+    double global_gross_delta() const {
+        return delta_metrics_().global_gross_delta();
+    }
+
+    double global_net_delta() const {
+        return delta_metrics_().global_net_delta();
+    }
+
+    double underlyer_gross_delta(const std::string& underlyer) const {
+        return delta_metrics_().underlyer_gross_delta(underlyer);
+    }
+
+    double underlyer_net_delta(const std::string& underlyer) const {
+        return delta_metrics_().underlyer_net_delta(underlyer);
+    }
+
+    aggregation::DeltaValue global_delta() const {
+        return delta_metrics_().global_delta();
+    }
+
+    aggregation::DeltaValue underlyer_delta(const std::string& underlyer) const {
+        return delta_metrics_().underlyer_delta(underlyer);
+    }
+};
+
+} // namespace engine
