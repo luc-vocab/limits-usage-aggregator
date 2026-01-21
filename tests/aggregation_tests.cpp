@@ -389,3 +389,209 @@ TEST_F(NotionalMetricsTest, EmptyStrategy) {
     EXPECT_DOUBLE_EQ(metrics.strategy_notional(""), 0.0);  // Empty string strategy not tracked
     EXPECT_DOUBLE_EQ(metrics.portfolio_notional("PORT1"), 10000.0);
 }
+
+// ============================================================================
+// Generic Engine Template Tests
+// ============================================================================
+
+#include "../src/engine/risk_engine.hpp"
+
+TEST(GenericEngineTest, EmptyEngine) {
+    // Engine with no metrics
+    engine::GenericRiskAggregationEngine<> engine;
+
+    EXPECT_EQ(engine.metric_count(), 0u);
+    EXPECT_EQ(engine.active_order_count(), 0u);
+}
+
+TEST(GenericEngineTest, DeltaOnlyEngine) {
+    engine::DeltaOnlyEngine engine;
+
+    EXPECT_EQ(engine.metric_count(), 1u);
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics>());
+
+    // Accessor methods from mixin should be available
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), 0.0);
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::BID;
+    order.price = 100.0;
+    order.quantity = 10.0;
+    order.delta = 0.5;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 5.0);  // 10 * 0.5
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), 5.0);    // BID = positive
+    EXPECT_DOUBLE_EQ(engine.underlyer_gross_delta("AAPL"), 5.0);
+}
+
+TEST(GenericEngineTest, OrderCountOnlyEngine) {
+    engine::OrderCountOnlyEngine engine;
+
+    EXPECT_EQ(engine.metric_count(), 1u);
+    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics>());
+
+    // Accessor methods from mixin should be available
+    EXPECT_EQ(engine.bid_order_count("AAPL"), 0);
+    EXPECT_EQ(engine.ask_order_count("AAPL"), 0);
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::BID;
+    order.price = 100.0;
+    order.quantity = 10.0;
+    order.delta = 0.5;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    EXPECT_EQ(engine.bid_order_count("AAPL"), 1);
+    EXPECT_EQ(engine.ask_order_count("AAPL"), 0);
+    EXPECT_EQ(engine.quoted_instruments_count("AAPL"), 1);
+}
+
+TEST(GenericEngineTest, NotionalOnlyEngine) {
+    engine::NotionalOnlyEngine engine;
+
+    EXPECT_EQ(engine.metric_count(), 1u);
+    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+
+    // Accessor methods from mixin should be available
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 0.0);
+    EXPECT_DOUBLE_EQ(engine.strategy_notional("STRAT1"), 0.0);
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::BID;
+    order.price = 100.0;
+    order.quantity = 10.0;
+    order.delta = 0.5;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);  // 10 * 100
+    EXPECT_DOUBLE_EQ(engine.strategy_notional("STRAT1"), 1000.0);
+    EXPECT_DOUBLE_EQ(engine.portfolio_notional("PORT1"), 1000.0);
+}
+
+TEST(GenericEngineTest, CustomMetricCombination) {
+    // Engine with only Delta and Notional metrics
+    using DeltaNotionalEngine = engine::GenericRiskAggregationEngine<
+        metrics::DeltaMetrics,
+        metrics::NotionalMetrics
+    >;
+
+    DeltaNotionalEngine engine;
+
+    EXPECT_EQ(engine.metric_count(), 2u);
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+
+    // Both delta and notional accessors should be available
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 0.0);
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::ASK;
+    order.price = 50.0;
+    order.quantity = 20.0;
+    order.delta = 0.3;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 6.0);   // 20 * 0.3
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), -6.0);    // ASK = negative
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);   // 20 * 50
+}
+
+TEST(GenericEngineTest, StandardEngineHasAllAccessors) {
+    engine::RiskAggregationEngine engine;
+
+    EXPECT_EQ(engine.metric_count(), 3u);
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+
+    // All accessor methods should be available
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), 0.0);
+    EXPECT_EQ(engine.bid_order_count("AAPL"), 0);
+    EXPECT_EQ(engine.ask_order_count("AAPL"), 0);
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 0.0);
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::BID;
+    order.price = 100.0;
+    order.quantity = 10.0;
+    order.delta = 0.5;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 5.0);
+    EXPECT_EQ(engine.bid_order_count("AAPL"), 1);
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);
+}
+
+TEST(GenericEngineTest, GetMetricAccess) {
+    engine::RiskAggregationEngine engine;
+
+    // Direct metric access via get_metric
+    auto& delta = engine.get_metric<metrics::DeltaMetrics>();
+    auto& order_count = engine.get_metric<metrics::OrderCountMetrics>();
+    auto& notional = engine.get_metric<metrics::NotionalMetrics>();
+
+    // Process an order
+    fix::NewOrderSingle order;
+    order.key.cl_ord_id = "ORD001";
+    order.symbol = "AAPL";
+    order.underlyer = "AAPL";
+    order.side = fix::Side::BID;
+    order.price = 100.0;
+    order.quantity = 10.0;
+    order.delta = 0.5;
+    order.strategy_id = "STRAT1";
+    order.portfolio_id = "PORT1";
+
+    engine.on_new_order_single(order);
+
+    // Access metrics directly
+    EXPECT_DOUBLE_EQ(delta.global_gross_delta(), 5.0);
+    EXPECT_EQ(order_count.bid_order_count("AAPL"), 1);
+    EXPECT_DOUBLE_EQ(notional.global_notional(), 1000.0);
+}
