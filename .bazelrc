@@ -16,3 +16,11 @@ build --cxxopt=-O2
 build:debug --compilation_mode=dbg
 build:debug --cxxopt=-g
 build:debug --cxxopt=-DDEBUG
+
+# Address Sanitizer configuration
+build:asan --strip=never
+build:asan --cxxopt=-fsanitize=address
+build:asan --cxxopt=-fno-omit-frame-pointer
+build:asan --cxxopt=-g
+build:asan --cxxopt=-O1
+build:asan --linkopt=-fsanitize=address

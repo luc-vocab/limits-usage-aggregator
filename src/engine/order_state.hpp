@@ -179,18 +179,21 @@ public:
             order->quantity = order->pending_quantity.value();
             order->leaves_qty = order->pending_quantity.value();
 
+            // Save the key to use for final lookup before potentially invalidating order pointer
+            fix::OrderKey final_key = orig_key;
+
             // Update key mapping if new key was assigned
             if (order->pending_key.has_value()) {
-                pending_replace_map_.erase(order->pending_key.value());
-                fix::OrderKey new_key = order->pending_key.value();
+                final_key = order->pending_key.value();
+                pending_replace_map_.erase(final_key);
                 TrackedOrder updated_order = std::move(*order);
-                updated_order.key = new_key;
+                updated_order.key = final_key;
                 orders_.erase(orig_key);
-                orders_[new_key] = std::move(updated_order);
+                orders_[final_key] = std::move(updated_order);
             }
 
-            // Clear pending state
-            order = get_order(order->pending_key.value_or(orig_key));
+            // Clear pending state - use saved key since order pointer may be invalid
+            order = get_order(final_key);
             if (order) {
                 order->state = OrderState::OPEN;
                 order->pending_price.reset();
