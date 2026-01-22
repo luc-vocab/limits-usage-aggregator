@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../aggregation/aggregation_core.hpp"
+#include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
 
 // Forward declarations
@@ -14,11 +14,19 @@ namespace metrics {
 // ============================================================================
 // Delta Metrics - Tracks gross and net delta at various grouping levels
 // ============================================================================
+//
+// Uses MultiGroupAggregator to automatically aggregate delta values at:
+// - Global level (system-wide totals)
+// - Per-underlyer level (e.g., AAPL, MSFT)
+//
 
 class DeltaMetrics {
 private:
-    aggregation::GlobalDeltaBucket global_;
-    aggregation::UnderlyerDeltaBucket per_underlyer_;
+    aggregation::MultiGroupAggregator<
+        aggregation::DeltaCombiner,
+        aggregation::GlobalKey,
+        aggregation::UnderlyerKey
+    > aggregator_;
 
     aggregation::DeltaValue make_delta_value(double delta_exposure, fix::Side side) const {
         double signed_delta = (side == fix::Side::BID) ? delta_exposure : -delta_exposure;
@@ -50,14 +58,14 @@ public:
 
     void add_order(const std::string& underlyer, double delta_exposure, fix::Side side) {
         auto dv = make_delta_value(delta_exposure, side);
-        global_.add(aggregation::GlobalKey::instance(), dv);
-        per_underlyer_.add(aggregation::UnderlyerKey{underlyer}, dv);
+        aggregator_.bucket<aggregation::GlobalKey>().add(aggregation::GlobalKey::instance(), dv);
+        aggregator_.bucket<aggregation::UnderlyerKey>().add(aggregation::UnderlyerKey{underlyer}, dv);
     }
 
     void remove_order(const std::string& underlyer, double delta_exposure, fix::Side side) {
         auto dv = make_delta_value(delta_exposure, side);
-        global_.remove(aggregation::GlobalKey::instance(), dv);
-        per_underlyer_.remove(aggregation::UnderlyerKey{underlyer}, dv);
+        aggregator_.bucket<aggregation::GlobalKey>().remove(aggregation::GlobalKey::instance(), dv);
+        aggregator_.bucket<aggregation::UnderlyerKey>().remove(aggregation::UnderlyerKey{underlyer}, dv);
     }
 
     void update_order(const std::string& underlyer,
@@ -76,11 +84,11 @@ public:
     // ========================================================================
 
     aggregation::DeltaValue global_delta() const {
-        return global_.get(aggregation::GlobalKey::instance());
+        return aggregator_.get(aggregation::GlobalKey::instance());
     }
 
     aggregation::DeltaValue underlyer_delta(const std::string& underlyer) const {
-        return per_underlyer_.get(aggregation::UnderlyerKey{underlyer});
+        return aggregator_.get(aggregation::UnderlyerKey{underlyer});
     }
 
     double global_gross_delta() const {
@@ -100,12 +108,11 @@ public:
     }
 
     std::vector<aggregation::UnderlyerKey> underlyers() const {
-        return per_underlyer_.keys();
+        return aggregator_.keys<aggregation::UnderlyerKey>();
     }
 
     void clear() {
-        global_.clear();
-        per_underlyer_.clear();
+        aggregator_.clear();
     }
 };
 
@@ -117,21 +124,26 @@ public:
 namespace metrics {
 
 inline void DeltaMetrics::on_order_added(const engine::TrackedOrder& order) {
-    add_order(order.underlyer, order.delta_exposure(), order.side);
+    auto dv = make_delta_value(order.delta_exposure(), order.side);
+    aggregator_.add(order, dv);
 }
 
 inline void DeltaMetrics::on_order_removed(const engine::TrackedOrder& order) {
-    remove_order(order.underlyer, order.delta_exposure(), order.side);
+    auto dv = make_delta_value(order.delta_exposure(), order.side);
+    aggregator_.remove(order, dv);
 }
 
 inline void DeltaMetrics::on_order_updated(const engine::TrackedOrder& order,
                                             double old_delta_exposure, double /*old_notional*/) {
-    update_order(order.underlyer, old_delta_exposure, order.delta_exposure(), order.side);
+    auto old_dv = make_delta_value(old_delta_exposure, order.side);
+    auto new_dv = make_delta_value(order.delta_exposure(), order.side);
+    aggregator_.update(order, old_dv, new_dv);
 }
 
 inline void DeltaMetrics::on_partial_fill(const engine::TrackedOrder& order,
                                            double filled_delta_exposure, double /*filled_notional*/) {
-    partial_fill(order.underlyer, filled_delta_exposure, order.side);
+    auto dv = make_delta_value(filled_delta_exposure, order.side);
+    aggregator_.remove(order, dv);
 }
 
 } // namespace metrics

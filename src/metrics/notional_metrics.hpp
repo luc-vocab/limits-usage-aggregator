@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../aggregation/aggregation_core.hpp"
+#include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
 
 // Forward declarations
@@ -14,12 +14,21 @@ namespace metrics {
 // ============================================================================
 // Notional Metrics - Tracks open order notional by strategy/portfolio
 // ============================================================================
+//
+// Uses MultiGroupAggregator to automatically aggregate notional values at:
+// - Global level (system-wide totals)
+// - Per-strategy level (if strategy_id is non-empty)
+// - Per-portfolio level (if portfolio_id is non-empty)
+//
 
 class NotionalMetrics {
 private:
-    aggregation::StrategyNotionalBucket per_strategy_;
-    aggregation::PortfolioNotionalBucket per_portfolio_;
-    aggregation::AggregationBucket<aggregation::GlobalKey, aggregation::SumCombiner<double>> global_;
+    aggregation::MultiGroupAggregator<
+        aggregation::SumCombiner<double>,
+        aggregation::GlobalKey,
+        aggregation::StrategyKey,
+        aggregation::PortfolioKey
+    > aggregator_;
 
 public:
     // ========================================================================
@@ -45,24 +54,24 @@ public:
     // ========================================================================
 
     void add_order(const std::string& strategy_id, const std::string& portfolio_id, double notional) {
-        global_.add(aggregation::GlobalKey::instance(), notional);
+        aggregator_.bucket<aggregation::GlobalKey>().add(aggregation::GlobalKey::instance(), notional);
 
         if (!strategy_id.empty()) {
-            per_strategy_.add(aggregation::StrategyKey{strategy_id}, notional);
+            aggregator_.bucket<aggregation::StrategyKey>().add(aggregation::StrategyKey{strategy_id}, notional);
         }
         if (!portfolio_id.empty()) {
-            per_portfolio_.add(aggregation::PortfolioKey{portfolio_id}, notional);
+            aggregator_.bucket<aggregation::PortfolioKey>().add(aggregation::PortfolioKey{portfolio_id}, notional);
         }
     }
 
     void remove_order(const std::string& strategy_id, const std::string& portfolio_id, double notional) {
-        global_.remove(aggregation::GlobalKey::instance(), notional);
+        aggregator_.bucket<aggregation::GlobalKey>().remove(aggregation::GlobalKey::instance(), notional);
 
         if (!strategy_id.empty()) {
-            per_strategy_.remove(aggregation::StrategyKey{strategy_id}, notional);
+            aggregator_.bucket<aggregation::StrategyKey>().remove(aggregation::StrategyKey{strategy_id}, notional);
         }
         if (!portfolio_id.empty()) {
-            per_portfolio_.remove(aggregation::PortfolioKey{portfolio_id}, notional);
+            aggregator_.bucket<aggregation::PortfolioKey>().remove(aggregation::PortfolioKey{portfolio_id}, notional);
         }
     }
 
@@ -81,29 +90,27 @@ public:
     // ========================================================================
 
     double global_notional() const {
-        return global_.get(aggregation::GlobalKey::instance());
+        return aggregator_.get(aggregation::GlobalKey::instance());
     }
 
     double strategy_notional(const std::string& strategy_id) const {
-        return per_strategy_.get(aggregation::StrategyKey{strategy_id});
+        return aggregator_.get(aggregation::StrategyKey{strategy_id});
     }
 
     double portfolio_notional(const std::string& portfolio_id) const {
-        return per_portfolio_.get(aggregation::PortfolioKey{portfolio_id});
+        return aggregator_.get(aggregation::PortfolioKey{portfolio_id});
     }
 
     std::vector<aggregation::StrategyKey> strategies() const {
-        return per_strategy_.keys();
+        return aggregator_.keys<aggregation::StrategyKey>();
     }
 
     std::vector<aggregation::PortfolioKey> portfolios() const {
-        return per_portfolio_.keys();
+        return aggregator_.keys<aggregation::PortfolioKey>();
     }
 
     void clear() {
-        global_.clear();
-        per_strategy_.clear();
-        per_portfolio_.clear();
+        aggregator_.clear();
     }
 };
 
@@ -115,21 +122,21 @@ public:
 namespace metrics {
 
 inline void NotionalMetrics::on_order_added(const engine::TrackedOrder& order) {
-    add_order(order.strategy_id, order.portfolio_id, order.notional());
+    aggregator_.add(order, order.notional());
 }
 
 inline void NotionalMetrics::on_order_removed(const engine::TrackedOrder& order) {
-    remove_order(order.strategy_id, order.portfolio_id, order.notional());
+    aggregator_.remove(order, order.notional());
 }
 
 inline void NotionalMetrics::on_order_updated(const engine::TrackedOrder& order,
                                                double /*old_delta_exposure*/, double old_notional) {
-    update_order(order.strategy_id, order.portfolio_id, old_notional, order.notional());
+    aggregator_.update(order, old_notional, order.notional());
 }
 
 inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order,
                                               double /*filled_delta_exposure*/, double filled_notional) {
-    partial_fill(order.strategy_id, order.portfolio_id, filled_notional);
+    aggregator_.remove(order, filled_notional);
 }
 
 } // namespace metrics

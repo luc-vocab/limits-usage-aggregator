@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../aggregation/aggregation_core.hpp"
+#include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
 #include <unordered_set>
 
@@ -15,15 +15,30 @@ namespace metrics {
 // ============================================================================
 // Order Count Metrics - Tracks order counts per instrument/side
 // ============================================================================
+//
+// Uses MultiGroupAggregator for order counts per instrument-side.
+// Quoted instruments tracking is handled separately due to its special
+// first-add/last-remove logic.
+//
 
 class OrderCountMetrics {
 private:
-    aggregation::InstrumentOrderCountBucket per_instrument_side_;
+    aggregation::MultiGroupAggregator<
+        aggregation::CountCombiner,
+        aggregation::InstrumentSideKey
+    > order_counts_;
 
     // Track which instruments have orders per underlyer (for quoted count)
     // underlyer -> set of instruments
     std::unordered_map<std::string, std::unordered_set<std::string>> instruments_per_underlyer_;
-    aggregation::UnderlyerInstrumentCountBucket quoted_instruments_;
+    aggregation::AggregationBucket<aggregation::UnderlyerKey, aggregation::CountCombiner> quoted_instruments_;
+
+    // Helper to check if an instrument still has orders
+    bool instrument_has_orders(const std::string& symbol) const {
+        aggregation::InstrumentSideKey bid_key{symbol, static_cast<int>(fix::Side::BID)};
+        aggregation::InstrumentSideKey ask_key{symbol, static_cast<int>(fix::Side::ASK)};
+        return order_counts_.get(bid_key) > 0 || order_counts_.get(ask_key) > 0;
+    }
 
 public:
     // ========================================================================
@@ -54,7 +69,7 @@ public:
 
     void add_order(const std::string& symbol, const std::string& underlyer, fix::Side side) {
         aggregation::InstrumentSideKey key{symbol, static_cast<int>(side)};
-        per_instrument_side_.add(key, 1);
+        order_counts_.bucket<aggregation::InstrumentSideKey>().add(key, 1);
 
         // Track quoted instruments per underlyer
         auto& instruments = instruments_per_underlyer_[underlyer];
@@ -67,16 +82,10 @@ public:
 
     void remove_order(const std::string& symbol, const std::string& underlyer, fix::Side side) {
         aggregation::InstrumentSideKey key{symbol, static_cast<int>(side)};
-        per_instrument_side_.remove(key, 1);
+        order_counts_.bucket<aggregation::InstrumentSideKey>().remove(key, 1);
 
         // Check if we still have any orders for this instrument
-        aggregation::InstrumentSideKey bid_key{symbol, static_cast<int>(fix::Side::BID)};
-        aggregation::InstrumentSideKey ask_key{symbol, static_cast<int>(fix::Side::ASK)};
-
-        int64_t bid_count = per_instrument_side_.get(bid_key);
-        int64_t ask_count = per_instrument_side_.get(ask_key);
-
-        if (bid_count == 0 && ask_count == 0) {
+        if (!instrument_has_orders(symbol)) {
             // No more orders for this instrument
             auto it = instruments_per_underlyer_.find(underlyer);
             if (it != instruments_per_underlyer_.end()) {
@@ -94,11 +103,11 @@ public:
     // ========================================================================
 
     int64_t bid_order_count(const std::string& symbol) const {
-        return per_instrument_side_.get(aggregation::InstrumentSideKey{symbol, static_cast<int>(fix::Side::BID)});
+        return order_counts_.get(aggregation::InstrumentSideKey{symbol, static_cast<int>(fix::Side::BID)});
     }
 
     int64_t ask_order_count(const std::string& symbol) const {
-        return per_instrument_side_.get(aggregation::InstrumentSideKey{symbol, static_cast<int>(fix::Side::ASK)});
+        return order_counts_.get(aggregation::InstrumentSideKey{symbol, static_cast<int>(fix::Side::ASK)});
     }
 
     int64_t total_order_count(const std::string& symbol) const {
@@ -114,7 +123,7 @@ public:
     }
 
     void clear() {
-        per_instrument_side_.clear();
+        order_counts_.clear();
         instruments_per_underlyer_.clear();
         quoted_instruments_.clear();
     }

@@ -595,3 +595,247 @@ TEST(GenericEngineTest, GetMetricAccess) {
     EXPECT_EQ(order_count.bid_order_count("AAPL"), 1);
     EXPECT_DOUBLE_EQ(notional.global_notional(), 1000.0);
 }
+
+// ============================================================================
+// MultiGroupAggregator Tests
+// ============================================================================
+
+#include "../src/aggregation/multi_group_aggregator.hpp"
+
+// Helper to create a TrackedOrder for testing
+engine::TrackedOrder make_test_order(
+    const std::string& symbol,
+    const std::string& underlyer,
+    const std::string& strategy_id,
+    const std::string& portfolio_id,
+    fix::Side side,
+    double price,
+    double quantity,
+    double delta
+) {
+    engine::TrackedOrder order;
+    order.key.cl_ord_id = "TEST001";
+    order.symbol = symbol;
+    order.underlyer = underlyer;
+    order.strategy_id = strategy_id;
+    order.portfolio_id = portfolio_id;
+    order.side = side;
+    order.price = price;
+    order.quantity = quantity;
+    order.leaves_qty = quantity;
+    order.cum_qty = 0.0;
+    order.delta = delta;
+    order.state = engine::OrderState::OPEN;
+    return order;
+}
+
+TEST(KeyExtractorTest, GlobalKeyAlwaysApplicable) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    EXPECT_TRUE(KeyExtractor<GlobalKey>::is_applicable(order));
+    EXPECT_EQ(KeyExtractor<GlobalKey>::extract(order), GlobalKey::instance());
+}
+
+TEST(KeyExtractorTest, UnderlyerKeyExtraction) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    EXPECT_TRUE(KeyExtractor<UnderlyerKey>::is_applicable(order));
+    EXPECT_EQ(KeyExtractor<UnderlyerKey>::extract(order), UnderlyerKey{"AAPL"});
+}
+
+TEST(KeyExtractorTest, StrategyKeyApplicability) {
+    auto order_with_strategy = make_test_order("AAPL", "AAPL", "STRAT1", "PORT1",
+                                                fix::Side::BID, 100.0, 10.0, 0.5);
+    auto order_without_strategy = make_test_order("AAPL", "AAPL", "", "PORT1",
+                                                   fix::Side::BID, 100.0, 10.0, 0.5);
+
+    EXPECT_TRUE(KeyExtractor<StrategyKey>::is_applicable(order_with_strategy));
+    EXPECT_FALSE(KeyExtractor<StrategyKey>::is_applicable(order_without_strategy));
+
+    EXPECT_EQ(KeyExtractor<StrategyKey>::extract(order_with_strategy), StrategyKey{"STRAT1"});
+}
+
+TEST(KeyExtractorTest, PortfolioKeyApplicability) {
+    auto order_with_portfolio = make_test_order("AAPL", "AAPL", "STRAT1", "PORT1",
+                                                 fix::Side::BID, 100.0, 10.0, 0.5);
+    auto order_without_portfolio = make_test_order("AAPL", "AAPL", "STRAT1", "",
+                                                    fix::Side::BID, 100.0, 10.0, 0.5);
+
+    EXPECT_TRUE(KeyExtractor<PortfolioKey>::is_applicable(order_with_portfolio));
+    EXPECT_FALSE(KeyExtractor<PortfolioKey>::is_applicable(order_without_portfolio));
+
+    EXPECT_EQ(KeyExtractor<PortfolioKey>::extract(order_with_portfolio), PortfolioKey{"PORT1"});
+}
+
+TEST(KeyExtractorTest, InstrumentSideKeyExtraction) {
+    auto bid_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                      fix::Side::BID, 100.0, 10.0, 0.5);
+    auto ask_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                      fix::Side::ASK, 100.0, 10.0, 0.5);
+
+    EXPECT_TRUE(KeyExtractor<InstrumentSideKey>::is_applicable(bid_order));
+
+    auto bid_key = KeyExtractor<InstrumentSideKey>::extract(bid_order);
+    auto ask_key = KeyExtractor<InstrumentSideKey>::extract(ask_order);
+
+    EXPECT_EQ(bid_key.symbol, "AAPL230120C150");
+    EXPECT_EQ(bid_key.side, static_cast<int>(fix::Side::BID));
+    EXPECT_EQ(ask_key.side, static_cast<int>(fix::Side::ASK));
+}
+
+class MultiGroupAggregatorTest : public ::testing::Test {
+protected:
+    using DeltaAggregator = MultiGroupAggregator<DeltaCombiner, GlobalKey, UnderlyerKey>;
+    using NotionalAggregator = MultiGroupAggregator<SumCombiner<double>, GlobalKey, StrategyKey, PortfolioKey>;
+
+    DeltaAggregator delta_agg;
+    NotionalAggregator notional_agg;
+};
+
+TEST_F(MultiGroupAggregatorTest, AddToAllApplicableBuckets) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    DeltaValue dv{50.0, 25.0};
+    delta_agg.add(order, dv);
+
+    // Check global
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 50.0);
+    EXPECT_DOUBLE_EQ(global_val.net, 25.0);
+
+    // Check underlyer
+    auto underlyer_val = delta_agg.get(UnderlyerKey{"AAPL"});
+    EXPECT_DOUBLE_EQ(underlyer_val.gross, 50.0);
+    EXPECT_DOUBLE_EQ(underlyer_val.net, 25.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, RemoveFromAllApplicableBuckets) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    DeltaValue dv{50.0, 25.0};
+    delta_agg.add(order, dv);
+    delta_agg.remove(order, dv);
+
+    // All values should be back to identity
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 0.0);
+    EXPECT_DOUBLE_EQ(global_val.net, 0.0);
+
+    auto underlyer_val = delta_agg.get(UnderlyerKey{"AAPL"});
+    EXPECT_DOUBLE_EQ(underlyer_val.gross, 0.0);
+    EXPECT_DOUBLE_EQ(underlyer_val.net, 0.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, UpdateInAllApplicableBuckets) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    DeltaValue old_dv{50.0, 25.0};
+    DeltaValue new_dv{75.0, 40.0};
+
+    delta_agg.add(order, old_dv);
+    delta_agg.update(order, old_dv, new_dv);
+
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 75.0);
+    EXPECT_DOUBLE_EQ(global_val.net, 40.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, SkipsNonApplicableBuckets) {
+    // Order with empty strategy_id
+    auto order = make_test_order("AAPL230120C150", "AAPL", "", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    notional_agg.add(order, 1000.0);
+
+    // Global and portfolio should be updated
+    EXPECT_DOUBLE_EQ(notional_agg.get(GlobalKey::instance()), 1000.0);
+    EXPECT_DOUBLE_EQ(notional_agg.get(PortfolioKey{"PORT1"}), 1000.0);
+
+    // Strategy should NOT be updated (empty strategy_id)
+    EXPECT_DOUBLE_EQ(notional_agg.get(StrategyKey{""}), 0.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, MultipleUnderlyers) {
+    auto aapl_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                       fix::Side::BID, 100.0, 10.0, 0.5);
+    auto msft_order = make_test_order("MSFT230120C250", "MSFT", "STRAT1", "PORT1",
+                                       fix::Side::ASK, 100.0, 10.0, 0.3);
+
+    delta_agg.add(aapl_order, DeltaValue{100.0, 50.0});
+    delta_agg.add(msft_order, DeltaValue{75.0, -30.0});
+
+    // Global should have sum
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 175.0);
+    EXPECT_DOUBLE_EQ(global_val.net, 20.0);
+
+    // Underlyers should be separate
+    auto aapl_val = delta_agg.get(UnderlyerKey{"AAPL"});
+    EXPECT_DOUBLE_EQ(aapl_val.gross, 100.0);
+    EXPECT_DOUBLE_EQ(aapl_val.net, 50.0);
+
+    auto msft_val = delta_agg.get(UnderlyerKey{"MSFT"});
+    EXPECT_DOUBLE_EQ(msft_val.gross, 75.0);
+    EXPECT_DOUBLE_EQ(msft_val.net, -30.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, ClearRemovesAll) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    delta_agg.add(order, DeltaValue{50.0, 25.0});
+    delta_agg.clear();
+
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 0.0);
+    EXPECT_DOUBLE_EQ(global_val.net, 0.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, HasKeyCompileTimeCheck) {
+    EXPECT_TRUE((DeltaAggregator::has_key<GlobalKey>()));
+    EXPECT_TRUE((DeltaAggregator::has_key<UnderlyerKey>()));
+    EXPECT_FALSE((DeltaAggregator::has_key<StrategyKey>()));
+
+    EXPECT_TRUE((NotionalAggregator::has_key<GlobalKey>()));
+    EXPECT_TRUE((NotionalAggregator::has_key<StrategyKey>()));
+    EXPECT_TRUE((NotionalAggregator::has_key<PortfolioKey>()));
+    EXPECT_FALSE((NotionalAggregator::has_key<UnderlyerKey>()));
+}
+
+TEST_F(MultiGroupAggregatorTest, KeyCount) {
+    EXPECT_EQ(DeltaAggregator::key_count(), 2u);
+    EXPECT_EQ(NotionalAggregator::key_count(), 3u);
+}
+
+TEST_F(MultiGroupAggregatorTest, DirectBucketAccess) {
+    auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                  fix::Side::BID, 100.0, 10.0, 0.5);
+
+    // Add directly to bucket
+    delta_agg.bucket<GlobalKey>().add(GlobalKey::instance(), DeltaValue{100.0, 50.0});
+
+    auto global_val = delta_agg.get(GlobalKey::instance());
+    EXPECT_DOUBLE_EQ(global_val.gross, 100.0);
+
+    // Underlyer bucket should still be empty
+    auto underlyer_val = delta_agg.get(UnderlyerKey{"AAPL"});
+    EXPECT_DOUBLE_EQ(underlyer_val.gross, 0.0);
+}
+
+TEST_F(MultiGroupAggregatorTest, KeysRetrieval) {
+    auto aapl_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
+                                       fix::Side::BID, 100.0, 10.0, 0.5);
+    auto msft_order = make_test_order("MSFT230120C250", "MSFT", "STRAT2", "PORT1",
+                                       fix::Side::ASK, 100.0, 10.0, 0.3);
+
+    delta_agg.add(aapl_order, DeltaValue{100.0, 50.0});
+    delta_agg.add(msft_order, DeltaValue{75.0, -30.0});
+
+    auto underlyer_keys = delta_agg.keys<UnderlyerKey>();
+    EXPECT_EQ(underlyer_keys.size(), 2u);
+}

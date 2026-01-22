@@ -10,6 +10,7 @@ cc_test(
     ],
     deps = [
         "//src/aggregation",
+        "//src/aggregation:multi_group",
         "//src/engine",
         "//src/fix",
         "//src/metrics",
