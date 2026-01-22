@@ -37,7 +37,7 @@
           </tr>
           <tr>
             <td class="headerItem">Date:</td>
-            <td class="headerValue">2026-01-22 09:39:17</td>
+            <td class="headerValue">2026-01-22 15:56:16</td>
             <td></td>
             <td class="headerItem">Functions:</td>
             <td class="headerCovTableEntry">3</td>
@@ -168,8 +168,8 @@
 <a name="106"><span class="lineNum">     106 </span>            : struct OrderKey {</a>
 <a name="107"><span class="lineNum">     107 </span>            :     std::string cl_ord_id;</a>
 <a name="108"><span class="lineNum">     108 </span>            : </a>
-<a name="109"><span class="lineNum">     109 </span><span class="lineCov">        463 :     bool operator==(const OrderKey&amp; other) const {</span></a>
-<a name="110"><span class="lineNum">     110 </span><span class="lineCov">        463 :         return cl_ord_id == other.cl_ord_id;</span></a>
+<a name="109"><span class="lineNum">     109 </span><span class="lineCov">        527 :     bool operator==(const OrderKey&amp; other) const {</span></a>
+<a name="110"><span class="lineNum">     110 </span><span class="lineCov">        527 :         return cl_ord_id == other.cl_ord_id;</span></a>
 <a name="111"><span class="lineNum">     111 </span>            :     }</a>
 <a name="112"><span class="lineNum">     112 </span>            : </a>
 <a name="113"><span class="lineNum">     113 </span><span class="lineCov">          1 :     bool operator!=(const OrderKey&amp; other) const {</span></a>
@@ -183,8 +183,8 @@
 <a name="121"><span class="lineNum">     121 </span>            : namespace std {</a>
 <a name="122"><span class="lineNum">     122 </span>            :     template&lt;&gt;</a>
 <a name="123"><span class="lineNum">     123 </span>            :     struct hash&lt;fix::OrderKey&gt; {</a>
-<a name="124"><span class="lineNum">     124 </span><span class="lineCov">        601 :         size_t operator()(const fix::OrderKey&amp; key) const {</span></a>
-<a name="125"><span class="lineNum">     125 </span><span class="lineCov">        601 :             return hash&lt;string&gt;{}(key.cl_ord_id);</span></a>
+<a name="124"><span class="lineNum">     124 </span><span class="lineCov">        689 :         size_t operator()(const fix::OrderKey&amp; key) const {</span></a>
+<a name="125"><span class="lineNum">     125 </span><span class="lineCov">        689 :             return hash&lt;string&gt;{}(key.cl_ord_id);</span></a>
 <a name="126"><span class="lineNum">     126 </span>            :         }</a>
 <a name="127"><span class="lineNum">     127 </span>            :     };</a>
 <a name="128"><span class="lineNum">     128 </span>            : }</a>

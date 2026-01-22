@@ -31,13 +31,13 @@
             <td class="headerValue">coverage.info</td>
             <td></td>
             <td class="headerItem">Lines:</td>
-            <td class="headerCovTableEntry">20</td>
+            <td class="headerCovTableEntry">21</td>
             <td class="headerCovTableEntry">22</td>
-            <td class="headerCovTableEntryHi">90.9 %</td>
+            <td class="headerCovTableEntryHi">95.5 %</td>
           </tr>
           <tr>
             <td class="headerItem">Date:</td>
-            <td class="headerValue">2026-01-22 09:39:17</td>
+            <td class="headerValue">2026-01-22 15:56:16</td>
             <td></td>
             <td class="headerItem">Functions:</td>
             <td class="headerCovTableEntry">2</td>
@@ -152,38 +152,38 @@
 <a name="90"><span class="lineNum">      90 </span>            :     bool is_unsolicited;               // True if exchange-initiated cancel</a>
 <a name="91"><span class="lineNum">      91 </span>            : </a>
 <a name="92"><span class="lineNum">      92 </span>            :     // Determine the high-level report type</a>
-<a name="93"><span class="lineNum">      93 </span><span class="lineCov">        160 :     ExecutionReportType report_type() const {</span></a>
-<a name="94"><span class="lineNum">      94 </span><span class="lineCov">        160 :         if (exec_type == ExecType::REJECTED) {</span></a>
-<a name="95"><span class="lineNum">      95 </span><span class="lineCov">          7 :             if (orig_key.has_value()) {</span></a>
-<a name="96"><span class="lineNum">      96 </span><span class="lineNoCov">          0 :                 return ExecutionReportType::UPDATE_NACK;</span></a>
+<a name="93"><span class="lineNum">      93 </span><span class="lineCov">        183 :     ExecutionReportType report_type() const {</span></a>
+<a name="94"><span class="lineNum">      94 </span><span class="lineCov">        183 :         if (exec_type == ExecType::REJECTED) {</span></a>
+<a name="95"><span class="lineNum">      95 </span><span class="lineCov">          9 :             if (orig_key.has_value()) {</span></a>
+<a name="96"><span class="lineNum">      96 </span><span class="lineCov">          1 :                 return ExecutionReportType::UPDATE_NACK;</span></a>
 <a name="97"><span class="lineNum">      97 </span>            :             }</a>
-<a name="98"><span class="lineNum">      98 </span><span class="lineCov">          7 :             return ExecutionReportType::INSERT_NACK;</span></a>
+<a name="98"><span class="lineNum">      98 </span><span class="lineCov">          8 :             return ExecutionReportType::INSERT_NACK;</span></a>
 <a name="99"><span class="lineNum">      99 </span>            :         }</a>
 <a name="100"><span class="lineNum">     100 </span>            : </a>
-<a name="101"><span class="lineNum">     101 </span><span class="lineCov">        153 :         if (exec_type == ExecType::CANCELED) {</span></a>
-<a name="102"><span class="lineNum">     102 </span><span class="lineCov">         11 :             if (is_unsolicited) {</span></a>
+<a name="101"><span class="lineNum">     101 </span><span class="lineCov">        174 :         if (exec_type == ExecType::CANCELED) {</span></a>
+<a name="102"><span class="lineNum">     102 </span><span class="lineCov">         15 :             if (is_unsolicited) {</span></a>
 <a name="103"><span class="lineNum">     103 </span><span class="lineCov">          2 :                 return ExecutionReportType::UNSOLICITED_CANCEL;</span></a>
 <a name="104"><span class="lineNum">     104 </span>            :             }</a>
-<a name="105"><span class="lineNum">     105 </span><span class="lineCov">          9 :             return ExecutionReportType::CANCEL_ACK;</span></a>
+<a name="105"><span class="lineNum">     105 </span><span class="lineCov">         13 :             return ExecutionReportType::CANCEL_ACK;</span></a>
 <a name="106"><span class="lineNum">     106 </span>            :         }</a>
 <a name="107"><span class="lineNum">     107 </span>            : </a>
-<a name="108"><span class="lineNum">     108 </span><span class="lineCov">        142 :         if (exec_type == ExecType::REPLACED) {</span></a>
+<a name="108"><span class="lineNum">     108 </span><span class="lineCov">        159 :         if (exec_type == ExecType::REPLACED) {</span></a>
 <a name="109"><span class="lineNum">     109 </span><span class="lineCov">          2 :             return ExecutionReportType::UPDATE_ACK;</span></a>
 <a name="110"><span class="lineNum">     110 </span>            :         }</a>
 <a name="111"><span class="lineNum">     111 </span>            : </a>
-<a name="112"><span class="lineNum">     112 </span><span class="lineCov">        140 :         if (exec_type == ExecType::FILL) {</span></a>
-<a name="113"><span class="lineNum">     113 </span><span class="lineCov">         44 :             return ExecutionReportType::FULL_FILL;</span></a>
+<a name="112"><span class="lineNum">     112 </span><span class="lineCov">        157 :         if (exec_type == ExecType::FILL) {</span></a>
+<a name="113"><span class="lineNum">     113 </span><span class="lineCov">         49 :             return ExecutionReportType::FULL_FILL;</span></a>
 <a name="114"><span class="lineNum">     114 </span>            :         }</a>
 <a name="115"><span class="lineNum">     115 </span>            : </a>
-<a name="116"><span class="lineNum">     116 </span><span class="lineCov">         96 :         if (exec_type == ExecType::PARTIAL_FILL) {</span></a>
-<a name="117"><span class="lineNum">     117 </span><span class="lineCov">          9 :             return ExecutionReportType::PARTIAL_FILL;</span></a>
+<a name="116"><span class="lineNum">     116 </span><span class="lineCov">        108 :         if (exec_type == ExecType::PARTIAL_FILL) {</span></a>
+<a name="117"><span class="lineNum">     117 </span><span class="lineCov">         10 :             return ExecutionReportType::PARTIAL_FILL;</span></a>
 <a name="118"><span class="lineNum">     118 </span>            :         }</a>
 <a name="119"><span class="lineNum">     119 </span>            : </a>
 <a name="120"><span class="lineNum">     120 </span>            :         // ExecType::NEW</a>
-<a name="121"><span class="lineNum">     121 </span><span class="lineCov">         87 :         if (orig_key.has_value()) {</span></a>
+<a name="121"><span class="lineNum">     121 </span><span class="lineCov">         98 :         if (orig_key.has_value()) {</span></a>
 <a name="122"><span class="lineNum">     122 </span><span class="lineNoCov">          0 :             return ExecutionReportType::UPDATE_ACK;</span></a>
 <a name="123"><span class="lineNum">     123 </span>            :         }</a>
-<a name="124"><span class="lineNum">     124 </span><span class="lineCov">         87 :         return ExecutionReportType::INSERT_ACK;</span></a>
+<a name="124"><span class="lineNum">     124 </span><span class="lineCov">         98 :         return ExecutionReportType::INSERT_ACK;</span></a>
 <a name="125"><span class="lineNum">     125 </span>            :     }</a>
 <a name="126"><span class="lineNum">     126 </span>            : };</a>
 <a name="127"><span class="lineNum">     127 </span>            : </a>

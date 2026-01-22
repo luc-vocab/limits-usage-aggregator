@@ -37,11 +37,11 @@
           </tr>
           <tr>
             <td class="headerItem">Date:</td>
-            <td class="headerValue">2026-01-22 09:39:17</td>
+            <td class="headerValue">2026-01-22 15:56:16</td>
             <td></td>
             <td class="headerItem">Functions:</td>
-            <td class="headerCovTableEntry">63</td>
-            <td class="headerCovTableEntry">63</td>
+            <td class="headerCovTableEntry">68</td>
+            <td class="headerCovTableEntry">68</td>
             <td class="headerCovTableEntryHi">100.0 %</td>
           </tr>
           <tr><td><img src="../glass.png" width=3 height=3 alt=""></td></tr>
@@ -134,98 +134,93 @@
 <a name="72"><span class="lineNum">      72 </span>            : // Convert metric value to double for breach checking</a>
 <a name="73"><span class="lineNum">      73 </span>            : template&lt;typename T&gt;</a>
 <a name="74"><span class="lineNum">      74 </span>            : double to_double(const T&amp; value) {</a>
-<a name="75"><span class="lineNum">      75 </span>            :     if constexpr (std::is_same_v&lt;T, aggregation::DeltaValue&gt;) {</a>
-<a name="76"><span class="lineNum">      76 </span>            :         // For DeltaValue, we return gross by default (net handled separately)</a>
-<a name="77"><span class="lineNum">      77 </span>            :         return value.gross;</a>
-<a name="78"><span class="lineNum">      78 </span>            :     } else {</a>
-<a name="79"><span class="lineNum">      79 </span>            :         return static_cast&lt;double&gt;(value);</a>
-<a name="80"><span class="lineNum">      80 </span>            :     }</a>
-<a name="81"><span class="lineNum">      81 </span>            : }</a>
-<a name="82"><span class="lineNum">      82 </span>            : </a>
-<a name="83"><span class="lineNum">      83 </span>            : } // namespace detail</a>
-<a name="84"><span class="lineNum">      84 </span>            : </a>
-<a name="85"><span class="lineNum">      85 </span>            : // ============================================================================</a>
-<a name="86"><span class="lineNum">      86 </span>            : // MetricLimitStores - Container holding one LimitStore per Metric</a>
-<a name="87"><span class="lineNum">      87 </span>            : // ============================================================================</a>
-<a name="88"><span class="lineNum">      88 </span>            : //</a>
-<a name="89"><span class="lineNum">      89 </span>            : // Each metric type must have a `key_type` typedef defining the key type</a>
-<a name="90"><span class="lineNum">      90 </span>            : // for its limit store.</a>
-<a name="91"><span class="lineNum">      91 </span>            : //</a>
-<a name="92"><span class="lineNum">      92 </span>            : // Usage:</a>
-<a name="93"><span class="lineNum">      93 </span>            : //   MetricLimitStores&lt;DeltaMetric&lt;UnderlyerKey&gt;, OrderCountMetric&lt;InstrumentSideKey&gt;&gt; stores;</a>
-<a name="94"><span class="lineNum">      94 </span>            : //   stores.get&lt;DeltaMetric&lt;UnderlyerKey&gt;&gt;().set_limit(UnderlyerKey{&quot;AAPL&quot;}, 1000.0);</a>
-<a name="95"><span class="lineNum">      95 </span>            : //</a>
+<a name="75"><span class="lineNum">      75 </span>            :     return static_cast&lt;double&gt;(value);</a>
+<a name="76"><span class="lineNum">      76 </span>            : }</a>
+<a name="77"><span class="lineNum">      77 </span>            : </a>
+<a name="78"><span class="lineNum">      78 </span>            : } // namespace detail</a>
+<a name="79"><span class="lineNum">      79 </span>            : </a>
+<a name="80"><span class="lineNum">      80 </span>            : // ============================================================================</a>
+<a name="81"><span class="lineNum">      81 </span>            : // MetricLimitStores - Container holding one LimitStore per Metric</a>
+<a name="82"><span class="lineNum">      82 </span>            : // ============================================================================</a>
+<a name="83"><span class="lineNum">      83 </span>            : //</a>
+<a name="84"><span class="lineNum">      84 </span>            : // Each metric type must have a `key_type` typedef defining the key type</a>
+<a name="85"><span class="lineNum">      85 </span>            : // for its limit store.</a>
+<a name="86"><span class="lineNum">      86 </span>            : //</a>
+<a name="87"><span class="lineNum">      87 </span>            : // Usage:</a>
+<a name="88"><span class="lineNum">      88 </span>            : //   MetricLimitStores&lt;DeltaMetric&lt;UnderlyerKey&gt;, OrderCountMetric&lt;InstrumentSideKey&gt;&gt; stores;</a>
+<a name="89"><span class="lineNum">      89 </span>            : //   stores.get&lt;DeltaMetric&lt;UnderlyerKey&gt;&gt;().set_limit(UnderlyerKey{&quot;AAPL&quot;}, 1000.0);</a>
+<a name="90"><span class="lineNum">      90 </span>            : //</a>
+<a name="91"><span class="lineNum">      91 </span>            : </a>
+<a name="92"><span class="lineNum">      92 </span>            : template&lt;typename... Metrics&gt;</a>
+<a name="93"><span class="lineNum">      93 </span>            : class MetricLimitStores {</a>
+<a name="94"><span class="lineNum">      94 </span>            : private:</a>
+<a name="95"><span class="lineNum">      95 </span>            :     std::tuple&lt;LimitStore&lt;typename Metrics::key_type&gt;...&gt; stores_;</a>
 <a name="96"><span class="lineNum">      96 </span>            : </a>
-<a name="97"><span class="lineNum">      97 </span>            : template&lt;typename... Metrics&gt;</a>
-<a name="98"><span class="lineNum">      98 </span>            : class MetricLimitStores {</a>
-<a name="99"><span class="lineNum">      99 </span>            : private:</a>
-<a name="100"><span class="lineNum">     100 </span>            :     std::tuple&lt;LimitStore&lt;typename Metrics::key_type&gt;...&gt; stores_;</a>
-<a name="101"><span class="lineNum">     101 </span>            : </a>
-<a name="102"><span class="lineNum">     102 </span>            : public:</a>
-<a name="103"><span class="lineNum">     103 </span><span class="lineCov">         81 :     MetricLimitStores() = default;</span></a>
-<a name="104"><span class="lineNum">     104 </span>            : </a>
-<a name="105"><span class="lineNum">     105 </span>            :     // Get the limit store for a specific metric type</a>
-<a name="106"><span class="lineNum">     106 </span>            :     template&lt;typename Metric&gt;</a>
-<a name="107"><span class="lineNum">     107 </span><span class="lineCov">        327 :     LimitStore&lt;typename Metric::key_type&gt;&amp; get() {</span></a>
-<a name="108"><span class="lineNum">     108 </span><span class="lineCov">        327 :         constexpr size_t idx = index_of_v&lt;Metric, Metrics...&gt;;</span></a>
-<a name="109"><span class="lineNum">     109 </span><span class="lineCov">        327 :         return std::get&lt;idx&gt;(stores_);</span></a>
-<a name="110"><span class="lineNum">     110 </span>            :     }</a>
-<a name="111"><span class="lineNum">     111 </span>            : </a>
-<a name="112"><span class="lineNum">     112 </span>            :     template&lt;typename Metric&gt;</a>
-<a name="113"><span class="lineNum">     113 </span><span class="lineCov">        122 :     const LimitStore&lt;typename Metric::key_type&gt;&amp; get() const {</span></a>
-<a name="114"><span class="lineNum">     114 </span><span class="lineCov">        122 :         constexpr size_t idx = index_of_v&lt;Metric, Metrics...&gt;;</span></a>
-<a name="115"><span class="lineNum">     115 </span><span class="lineCov">        122 :         return std::get&lt;idx&gt;(stores_);</span></a>
-<a name="116"><span class="lineNum">     116 </span>            :     }</a>
+<a name="97"><span class="lineNum">      97 </span>            : public:</a>
+<a name="98"><span class="lineNum">      98 </span><span class="lineCov">         91 :     MetricLimitStores() = default;</span></a>
+<a name="99"><span class="lineNum">      99 </span>            : </a>
+<a name="100"><span class="lineNum">     100 </span>            :     // Get the limit store for a specific metric type</a>
+<a name="101"><span class="lineNum">     101 </span>            :     template&lt;typename Metric&gt;</a>
+<a name="102"><span class="lineNum">     102 </span><span class="lineCov">        207 :     LimitStore&lt;typename Metric::key_type&gt;&amp; get() {</span></a>
+<a name="103"><span class="lineNum">     103 </span><span class="lineCov">        207 :         constexpr size_t idx = index_of_v&lt;Metric, Metrics...&gt;;</span></a>
+<a name="104"><span class="lineNum">     104 </span><span class="lineCov">        207 :         return std::get&lt;idx&gt;(stores_);</span></a>
+<a name="105"><span class="lineNum">     105 </span>            :     }</a>
+<a name="106"><span class="lineNum">     106 </span>            : </a>
+<a name="107"><span class="lineNum">     107 </span>            :     template&lt;typename Metric&gt;</a>
+<a name="108"><span class="lineNum">     108 </span><span class="lineCov">        123 :     const LimitStore&lt;typename Metric::key_type&gt;&amp; get() const {</span></a>
+<a name="109"><span class="lineNum">     109 </span><span class="lineCov">        123 :         constexpr size_t idx = index_of_v&lt;Metric, Metrics...&gt;;</span></a>
+<a name="110"><span class="lineNum">     110 </span><span class="lineCov">        123 :         return std::get&lt;idx&gt;(stores_);</span></a>
+<a name="111"><span class="lineNum">     111 </span>            :     }</a>
+<a name="112"><span class="lineNum">     112 </span>            : </a>
+<a name="113"><span class="lineNum">     113 </span>            :     // Reset all limit stores</a>
+<a name="114"><span class="lineNum">     114 </span><span class="lineCov">          7 :     void reset() {</span></a>
+<a name="115"><span class="lineNum">     115 </span><span class="lineCov">         14 :         std::apply([](auto&amp;... stores) { (stores.reset(), ...); }, stores_);</span></a>
+<a name="116"><span class="lineNum">     116 </span><span class="lineCov">          7 :     }</span></a>
 <a name="117"><span class="lineNum">     117 </span>            : </a>
-<a name="118"><span class="lineNum">     118 </span>            :     // Reset all limit stores</a>
-<a name="119"><span class="lineNum">     119 </span><span class="lineCov">          7 :     void reset() {</span></a>
-<a name="120"><span class="lineNum">     120 </span><span class="lineCov">         14 :         std::apply([](auto&amp;... stores) { (stores.reset(), ...); }, stores_);</span></a>
-<a name="121"><span class="lineNum">     121 </span><span class="lineCov">          7 :     }</span></a>
-<a name="122"><span class="lineNum">     122 </span>            : </a>
-<a name="123"><span class="lineNum">     123 </span>            :     // Clear all limit stores (keeps defaults)</a>
-<a name="124"><span class="lineNum">     124 </span>            :     void clear() {</a>
-<a name="125"><span class="lineNum">     125 </span>            :         std::apply([](auto&amp;... stores) { (stores.clear(), ...); }, stores_);</a>
-<a name="126"><span class="lineNum">     126 </span>            :     }</a>
-<a name="127"><span class="lineNum">     127 </span>            : };</a>
-<a name="128"><span class="lineNum">     128 </span>            : </a>
-<a name="129"><span class="lineNum">     129 </span>            : // ============================================================================</a>
-<a name="130"><span class="lineNum">     130 </span>            : // Metric traits for limit checking</a>
-<a name="131"><span class="lineNum">     131 </span>            : // ============================================================================</a>
-<a name="132"><span class="lineNum">     132 </span>            : </a>
-<a name="133"><span class="lineNum">     133 </span>            : // Trait to detect if a metric provides compute_order_contribution</a>
-<a name="134"><span class="lineNum">     134 </span>            : template&lt;typename Metric, typename = void&gt;</a>
-<a name="135"><span class="lineNum">     135 </span>            : struct has_compute_order_contribution : std::false_type {};</a>
-<a name="136"><span class="lineNum">     136 </span>            : </a>
-<a name="137"><span class="lineNum">     137 </span>            : template&lt;typename Metric&gt;</a>
-<a name="138"><span class="lineNum">     138 </span>            : struct has_compute_order_contribution&lt;Metric, std::void_t&lt;decltype(</a>
-<a name="139"><span class="lineNum">     139 </span>            :     Metric::compute_order_contribution(</a>
-<a name="140"><span class="lineNum">     140 </span>            :         std::declval&lt;const fix::NewOrderSingle&amp;&gt;(),</a>
-<a name="141"><span class="lineNum">     141 </span>            :         std::declval&lt;const typename Metric::provider_type*&gt;()</a>
-<a name="142"><span class="lineNum">     142 </span>            :     )</a>
-<a name="143"><span class="lineNum">     143 </span>            : )&gt;&gt; : std::true_type {};</a>
-<a name="144"><span class="lineNum">     144 </span>            : </a>
-<a name="145"><span class="lineNum">     145 </span>            : template&lt;typename Metric&gt;</a>
-<a name="146"><span class="lineNum">     146 </span>            : inline constexpr bool has_compute_order_contribution_v = has_compute_order_contribution&lt;Metric&gt;::value;</a>
-<a name="147"><span class="lineNum">     147 </span>            : </a>
-<a name="148"><span class="lineNum">     148 </span>            : // Trait to detect if a metric provides extract_key</a>
-<a name="149"><span class="lineNum">     149 </span>            : template&lt;typename Metric, typename = void&gt;</a>
-<a name="150"><span class="lineNum">     150 </span>            : struct has_extract_key : std::false_type {};</a>
+<a name="118"><span class="lineNum">     118 </span>            :     // Clear all limit stores (keeps defaults)</a>
+<a name="119"><span class="lineNum">     119 </span>            :     void clear() {</a>
+<a name="120"><span class="lineNum">     120 </span>            :         std::apply([](auto&amp;... stores) { (stores.clear(), ...); }, stores_);</a>
+<a name="121"><span class="lineNum">     121 </span>            :     }</a>
+<a name="122"><span class="lineNum">     122 </span>            : };</a>
+<a name="123"><span class="lineNum">     123 </span>            : </a>
+<a name="124"><span class="lineNum">     124 </span>            : // ============================================================================</a>
+<a name="125"><span class="lineNum">     125 </span>            : // Metric traits for limit checking</a>
+<a name="126"><span class="lineNum">     126 </span>            : // ============================================================================</a>
+<a name="127"><span class="lineNum">     127 </span>            : </a>
+<a name="128"><span class="lineNum">     128 </span>            : // Trait to detect if a metric provides compute_order_contribution</a>
+<a name="129"><span class="lineNum">     129 </span>            : template&lt;typename Metric, typename = void&gt;</a>
+<a name="130"><span class="lineNum">     130 </span>            : struct has_compute_order_contribution : std::false_type {};</a>
+<a name="131"><span class="lineNum">     131 </span>            : </a>
+<a name="132"><span class="lineNum">     132 </span>            : template&lt;typename Metric&gt;</a>
+<a name="133"><span class="lineNum">     133 </span>            : struct has_compute_order_contribution&lt;Metric, std::void_t&lt;decltype(</a>
+<a name="134"><span class="lineNum">     134 </span>            :     Metric::compute_order_contribution(</a>
+<a name="135"><span class="lineNum">     135 </span>            :         std::declval&lt;const fix::NewOrderSingle&amp;&gt;(),</a>
+<a name="136"><span class="lineNum">     136 </span>            :         std::declval&lt;const typename Metric::provider_type*&gt;()</a>
+<a name="137"><span class="lineNum">     137 </span>            :     )</a>
+<a name="138"><span class="lineNum">     138 </span>            : )&gt;&gt; : std::true_type {};</a>
+<a name="139"><span class="lineNum">     139 </span>            : </a>
+<a name="140"><span class="lineNum">     140 </span>            : template&lt;typename Metric&gt;</a>
+<a name="141"><span class="lineNum">     141 </span>            : inline constexpr bool has_compute_order_contribution_v = has_compute_order_contribution&lt;Metric&gt;::value;</a>
+<a name="142"><span class="lineNum">     142 </span>            : </a>
+<a name="143"><span class="lineNum">     143 </span>            : // Trait to detect if a metric provides extract_key</a>
+<a name="144"><span class="lineNum">     144 </span>            : template&lt;typename Metric, typename = void&gt;</a>
+<a name="145"><span class="lineNum">     145 </span>            : struct has_extract_key : std::false_type {};</a>
+<a name="146"><span class="lineNum">     146 </span>            : </a>
+<a name="147"><span class="lineNum">     147 </span>            : template&lt;typename Metric&gt;</a>
+<a name="148"><span class="lineNum">     148 </span>            : struct has_extract_key&lt;Metric, std::void_t&lt;decltype(</a>
+<a name="149"><span class="lineNum">     149 </span>            :     Metric::extract_key(std::declval&lt;const fix::NewOrderSingle&amp;&gt;())</a>
+<a name="150"><span class="lineNum">     150 </span>            : )&gt;&gt; : std::true_type {};</a>
 <a name="151"><span class="lineNum">     151 </span>            : </a>
 <a name="152"><span class="lineNum">     152 </span>            : template&lt;typename Metric&gt;</a>
-<a name="153"><span class="lineNum">     153 </span>            : struct has_extract_key&lt;Metric, std::void_t&lt;decltype(</a>
-<a name="154"><span class="lineNum">     154 </span>            :     Metric::extract_key(std::declval&lt;const fix::NewOrderSingle&amp;&gt;())</a>
-<a name="155"><span class="lineNum">     155 </span>            : )&gt;&gt; : std::true_type {};</a>
-<a name="156"><span class="lineNum">     156 </span>            : </a>
-<a name="157"><span class="lineNum">     157 </span>            : template&lt;typename Metric&gt;</a>
-<a name="158"><span class="lineNum">     158 </span>            : inline constexpr bool has_extract_key_v = has_extract_key&lt;Metric&gt;::value;</a>
-<a name="159"><span class="lineNum">     159 </span>            : </a>
-<a name="160"><span class="lineNum">     160 </span>            : // Trait to get the limit type enum for a metric</a>
-<a name="161"><span class="lineNum">     161 </span>            : template&lt;typename Metric&gt;</a>
-<a name="162"><span class="lineNum">     162 </span>            : struct metric_limit_type {</a>
-<a name="163"><span class="lineNum">     163 </span>            :     static constexpr LimitType value = LimitType::ORDER_COUNT; // Default</a>
-<a name="164"><span class="lineNum">     164 </span>            : };</a>
-<a name="165"><span class="lineNum">     165 </span>            : </a>
-<a name="166"><span class="lineNum">     166 </span>            : } // namespace engine</a>
+<a name="153"><span class="lineNum">     153 </span>            : inline constexpr bool has_extract_key_v = has_extract_key&lt;Metric&gt;::value;</a>
+<a name="154"><span class="lineNum">     154 </span>            : </a>
+<a name="155"><span class="lineNum">     155 </span>            : // Trait to get the limit type enum for a metric</a>
+<a name="156"><span class="lineNum">     156 </span>            : template&lt;typename Metric&gt;</a>
+<a name="157"><span class="lineNum">     157 </span>            : struct metric_limit_type {</a>
+<a name="158"><span class="lineNum">     158 </span>            :     static constexpr LimitType value = LimitType::ORDER_COUNT; // Default</a>
+<a name="159"><span class="lineNum">     159 </span>            : };</a>
+<a name="160"><span class="lineNum">     160 </span>            : </a>
+<a name="161"><span class="lineNum">     161 </span>            : } // namespace engine</a>
 </pre>
       </td>
     </tr>
