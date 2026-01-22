@@ -14,11 +14,7 @@ cc_test(
         "integration_test_vega_delta_combined.cpp",
     ],
     deps = [
-        "//src/aggregation",
-        "//src/engine",
-        "//src/fix",
-        "//src/instrument",
-        "//src/metrics",
+        "//src",
         "@googletest//:gtest_main",
     ],
 )
