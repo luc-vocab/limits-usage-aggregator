@@ -1,0 +1,521 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+
+<html lang="en">
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>LCOV - coverage.info - /src/tests/integration_test_option_underlyer_refactored.cpp</title>
+  <link rel="stylesheet" type="text/css" href="../../gcov.css">
+</head>
+
+<body>
+
+  <table width="100%" border=0 cellspacing=0 cellpadding=0>
+    <tr><td class="title">LCOV - code coverage report</td></tr>
+    <tr><td class="ruler"><img src="../../glass.png" width=3 height=3 alt=""></td></tr>
+
+    <tr>
+      <td width="100%">
+        <table cellpadding=1 border=0 width="100%">
+          <tr>
+            <td width="10%" class="headerItem">Current view:</td>
+            <td width="35%" class="headerValue"><a href="../../index.html">top level</a> - <a href="index.html">src/tests</a> - integration_test_option_underlyer_refactored.cpp<span style="font-size: 80%;"> (source / <a href="integration_test_option_underlyer_refactored.cpp.func-sort-c.html">functions</a>)</span></td>
+            <td width="5%"></td>
+            <td width="15%"></td>
+            <td width="10%" class="headerCovTableHead">Hit</td>
+            <td width="10%" class="headerCovTableHead">Total</td>
+            <td width="15%" class="headerCovTableHead">Coverage</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test:</td>
+            <td class="headerValue">coverage.info</td>
+            <td></td>
+            <td class="headerItem">Lines:</td>
+            <td class="headerCovTableEntry">238</td>
+            <td class="headerCovTableEntry">245</td>
+            <td class="headerCovTableEntryHi">97.1 %</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Date:</td>
+            <td class="headerValue">2026-01-22 09:39:17</td>
+            <td></td>
+            <td class="headerItem">Functions:</td>
+            <td class="headerCovTableEntry">40</td>
+            <td class="headerCovTableEntry">40</td>
+            <td class="headerCovTableEntryHi">100.0 %</td>
+          </tr>
+          <tr><td><img src="../../glass.png" width=3 height=3 alt=""></td></tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr><td class="ruler"><img src="../../glass.png" width=3 height=3 alt=""></td></tr>
+  </table>
+
+  <table cellpadding=0 cellspacing=0 border=0>
+    <tr>
+      <td><br></td>
+    </tr>
+    <tr>
+      <td>
+<pre class="sourceHeading">          Line data    Source code</pre>
+<pre class="source">
+<a name="1"><span class="lineNum">       1 </span>            : #include &lt;gtest/gtest.h&gt;</a>
+<a name="2"><span class="lineNum">       2 </span>            : #include &quot;../src/engine/risk_engine_with_limits.hpp&quot;</a>
+<a name="3"><span class="lineNum">       3 </span>            : #include &quot;../src/metrics/order_count_metric.hpp&quot;</a>
+<a name="4"><span class="lineNum">       4 </span>            : #include &quot;../src/fix/fix_parser.hpp&quot;</a>
+<a name="5"><span class="lineNum">       5 </span>            : </a>
+<a name="6"><span class="lineNum">       6 </span>            : using namespace engine;</a>
+<a name="7"><span class="lineNum">       7 </span>            : using namespace fix;</a>
+<a name="8"><span class="lineNum">       8 </span>            : using namespace aggregation;</a>
+<a name="9"><span class="lineNum">       9 </span>            : using namespace metrics;</a>
+<a name="10"><span class="lineNum">      10 </span>            : </a>
+<a name="11"><span class="lineNum">      11 </span>            : // ============================================================================</a>
+<a name="12"><span class="lineNum">      12 </span>            : // Refactored Option Underlyer Order Count Test</a>
+<a name="13"><span class="lineNum">      13 </span>            : // ============================================================================</a>
+<a name="14"><span class="lineNum">      14 </span>            : //</a>
+<a name="15"><span class="lineNum">      15 </span>            : // This test uses 3 separate single-purpose metrics:</a>
+<a name="16"><span class="lineNum">      16 </span>            : //   1. OpenOrdersPerInstrumentSide: Orders per instrument-side (open stage only), limit=1</a>
+<a name="17"><span class="lineNum">      17 </span>            : //   2. InFlightOrdersPerInstrumentSide: Orders per instrument-side (in-flight stage only)</a>
+<a name="18"><span class="lineNum">      18 </span>            : //   3. OpenOrdersPerUnderlyer: Quoted instruments per underlyer (open stage only)</a>
+<a name="19"><span class="lineNum">      19 </span>            : //</a>
+<a name="20"><span class="lineNum">      20 </span>            : // After every test step, we explicitly assert the current state of all 3 metrics.</a>
+<a name="21"><span class="lineNum">      21 </span>            : //</a>
+<a name="22"><span class="lineNum">      22 </span>            : </a>
+<a name="23"><span class="lineNum">      23 </span>            : namespace {</a>
+<a name="24"><span class="lineNum">      24 </span>            : </a>
+<a name="25"><span class="lineNum">      25 </span>            : // Helper functions</a>
+<a name="26"><span class="lineNum">      26 </span><span class="lineCov">         20 : NewOrderSingle create_order(const std::string&amp; cl_ord_id, const std::string&amp; symbol,</span></a>
+<a name="27"><span class="lineNum">      27 </span>            :                              const std::string&amp; underlyer, Side side,</a>
+<a name="28"><span class="lineNum">      28 </span>            :                              double price, int64_t qty) {</a>
+<a name="29"><span class="lineNum">      29 </span><span class="lineCov">         20 :     NewOrderSingle order;</span></a>
+<a name="30"><span class="lineNum">      30 </span><span class="lineCov">         20 :     order.key.cl_ord_id = cl_ord_id;</span></a>
+<a name="31"><span class="lineNum">      31 </span><span class="lineCov">         20 :     order.symbol = symbol;</span></a>
+<a name="32"><span class="lineNum">      32 </span><span class="lineCov">         20 :     order.underlyer = underlyer;</span></a>
+<a name="33"><span class="lineNum">      33 </span><span class="lineCov">         20 :     order.side = side;</span></a>
+<a name="34"><span class="lineNum">      34 </span><span class="lineCov">         20 :     order.price = price;</span></a>
+<a name="35"><span class="lineNum">      35 </span><span class="lineCov">         20 :     order.quantity = qty;</span></a>
+<a name="36"><span class="lineNum">      36 </span><span class="lineCov">         20 :     order.strategy_id = &quot;STRAT1&quot;;</span></a>
+<a name="37"><span class="lineNum">      37 </span><span class="lineCov">         20 :     order.portfolio_id = &quot;PORT1&quot;;</span></a>
+<a name="38"><span class="lineNum">      38 </span><span class="lineCov">         20 :     return order;</span></a>
+<a name="39"><span class="lineNum">      39 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="40"><span class="lineNum">      40 </span>            : </a>
+<a name="41"><span class="lineNum">      41 </span><span class="lineCov">         11 : ExecutionReport create_ack(const std::string&amp; cl_ord_id, int64_t leaves_qty) {</span></a>
+<a name="42"><span class="lineNum">      42 </span><span class="lineCov">         11 :     ExecutionReport report;</span></a>
+<a name="43"><span class="lineNum">      43 </span><span class="lineCov">         11 :     report.key.cl_ord_id = cl_ord_id;</span></a>
+<a name="44"><span class="lineNum">      44 </span><span class="lineCov">         11 :     report.order_id = &quot;EX&quot; + cl_ord_id;</span></a>
+<a name="45"><span class="lineNum">      45 </span><span class="lineCov">         11 :     report.ord_status = OrdStatus::NEW;</span></a>
+<a name="46"><span class="lineNum">      46 </span><span class="lineCov">         11 :     report.exec_type = ExecType::NEW;</span></a>
+<a name="47"><span class="lineNum">      47 </span><span class="lineCov">         11 :     report.leaves_qty = leaves_qty;</span></a>
+<a name="48"><span class="lineNum">      48 </span><span class="lineCov">         11 :     report.cum_qty = 0;</span></a>
+<a name="49"><span class="lineNum">      49 </span><span class="lineCov">         11 :     report.is_unsolicited = false;</span></a>
+<a name="50"><span class="lineNum">      50 </span><span class="lineCov">         11 :     return report;</span></a>
+<a name="51"><span class="lineNum">      51 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="52"><span class="lineNum">      52 </span>            : </a>
+<a name="53"><span class="lineNum">      53 </span><span class="lineCov">          1 : ExecutionReport create_nack(const std::string&amp; cl_ord_id) {</span></a>
+<a name="54"><span class="lineNum">      54 </span><span class="lineCov">          1 :     ExecutionReport report;</span></a>
+<a name="55"><span class="lineNum">      55 </span><span class="lineCov">          1 :     report.key.cl_ord_id = cl_ord_id;</span></a>
+<a name="56"><span class="lineNum">      56 </span><span class="lineCov">          1 :     report.order_id = &quot;EX&quot; + cl_ord_id;</span></a>
+<a name="57"><span class="lineNum">      57 </span><span class="lineCov">          1 :     report.ord_status = OrdStatus::REJECTED;</span></a>
+<a name="58"><span class="lineNum">      58 </span><span class="lineCov">          1 :     report.exec_type = ExecType::REJECTED;</span></a>
+<a name="59"><span class="lineNum">      59 </span><span class="lineCov">          1 :     report.leaves_qty = 0;</span></a>
+<a name="60"><span class="lineNum">      60 </span><span class="lineCov">          1 :     report.cum_qty = 0;</span></a>
+<a name="61"><span class="lineNum">      61 </span><span class="lineCov">          1 :     report.is_unsolicited = false;</span></a>
+<a name="62"><span class="lineNum">      62 </span><span class="lineCov">          1 :     return report;</span></a>
+<a name="63"><span class="lineNum">      63 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="64"><span class="lineNum">      64 </span>            : </a>
+<a name="65"><span class="lineNum">      65 </span><span class="lineCov">          2 : ExecutionReport create_cancel_ack(const std::string&amp; cancel_id, const std::string&amp; orig_id) {</span></a>
+<a name="66"><span class="lineNum">      66 </span><span class="lineCov">          2 :     ExecutionReport report;</span></a>
+<a name="67"><span class="lineNum">      67 </span><span class="lineCov">          2 :     report.key.cl_ord_id = cancel_id;</span></a>
+<a name="68"><span class="lineNum">      68 </span><span class="lineCov">          2 :     report.order_id = &quot;EX&quot; + orig_id;</span></a>
+<a name="69"><span class="lineNum">      69 </span><span class="lineCov">          2 :     report.ord_status = OrdStatus::CANCELED;</span></a>
+<a name="70"><span class="lineNum">      70 </span><span class="lineCov">          2 :     report.exec_type = ExecType::CANCELED;</span></a>
+<a name="71"><span class="lineNum">      71 </span><span class="lineCov">          2 :     report.leaves_qty = 0;</span></a>
+<a name="72"><span class="lineNum">      72 </span><span class="lineCov">          2 :     report.cum_qty = 0;</span></a>
+<a name="73"><span class="lineNum">      73 </span><span class="lineCov">          2 :     report.is_unsolicited = false;</span></a>
+<a name="74"><span class="lineNum">      74 </span><span class="lineCov">          2 :     report.orig_key = OrderKey{orig_id};</span></a>
+<a name="75"><span class="lineNum">      75 </span><span class="lineCov">          2 :     return report;</span></a>
+<a name="76"><span class="lineNum">      76 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="77"><span class="lineNum">      77 </span>            : </a>
+<a name="78"><span class="lineNum">      78 </span><span class="lineCov">          4 : ExecutionReport create_fill(const std::string&amp; cl_ord_id, int64_t fill_qty, int64_t leaves_qty, double price) {</span></a>
+<a name="79"><span class="lineNum">      79 </span><span class="lineCov">          4 :     ExecutionReport report;</span></a>
+<a name="80"><span class="lineNum">      80 </span><span class="lineCov">          4 :     report.key.cl_ord_id = cl_ord_id;</span></a>
+<a name="81"><span class="lineNum">      81 </span><span class="lineCov">          4 :     report.order_id = &quot;EX&quot; + cl_ord_id;</span></a>
+<a name="82"><span class="lineNum">      82 </span><span class="lineCov">          4 :     report.ord_status = leaves_qty &gt; 0 ? OrdStatus::PARTIALLY_FILLED : OrdStatus::FILLED;</span></a>
+<a name="83"><span class="lineNum">      83 </span><span class="lineCov">          4 :     report.exec_type = leaves_qty &gt; 0 ? ExecType::PARTIAL_FILL : ExecType::FILL;</span></a>
+<a name="84"><span class="lineNum">      84 </span><span class="lineCov">          4 :     report.leaves_qty = leaves_qty;</span></a>
+<a name="85"><span class="lineNum">      85 </span><span class="lineCov">          4 :     report.cum_qty = fill_qty;</span></a>
+<a name="86"><span class="lineNum">      86 </span><span class="lineCov">          4 :     report.last_qty = fill_qty;</span></a>
+<a name="87"><span class="lineNum">      87 </span><span class="lineCov">          4 :     report.last_px = price;</span></a>
+<a name="88"><span class="lineNum">      88 </span><span class="lineCov">          4 :     report.is_unsolicited = false;</span></a>
+<a name="89"><span class="lineNum">      89 </span><span class="lineCov">          4 :     return report;</span></a>
+<a name="90"><span class="lineNum">      90 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="91"><span class="lineNum">      91 </span>            : </a>
+<a name="92"><span class="lineNum">      92 </span><span class="lineCov">          2 : OrderCancelRequest create_cancel_request(const std::string&amp; cancel_id, const std::string&amp; orig_id,</span></a>
+<a name="93"><span class="lineNum">      93 </span>            :                                           const std::string&amp; symbol, Side side) {</a>
+<a name="94"><span class="lineNum">      94 </span><span class="lineCov">          2 :     OrderCancelRequest req;</span></a>
+<a name="95"><span class="lineNum">      95 </span><span class="lineCov">          2 :     req.key.cl_ord_id = cancel_id;</span></a>
+<a name="96"><span class="lineNum">      96 </span><span class="lineCov">          2 :     req.orig_key.cl_ord_id = orig_id;</span></a>
+<a name="97"><span class="lineNum">      97 </span><span class="lineCov">          2 :     req.symbol = symbol;</span></a>
+<a name="98"><span class="lineNum">      98 </span><span class="lineCov">          2 :     req.side = side;</span></a>
+<a name="99"><span class="lineNum">      99 </span><span class="lineCov">          2 :     return req;</span></a>
+<a name="100"><span class="lineNum">     100 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="101"><span class="lineNum">     101 </span>            : </a>
+<a name="102"><span class="lineNum">     102 </span><span class="lineCov">          1 : ExecutionReport create_unsolicited_cancel(const std::string&amp; cl_ord_id) {</span></a>
+<a name="103"><span class="lineNum">     103 </span><span class="lineCov">          1 :     ExecutionReport report;</span></a>
+<a name="104"><span class="lineNum">     104 </span><span class="lineCov">          1 :     report.key.cl_ord_id = cl_ord_id;</span></a>
+<a name="105"><span class="lineNum">     105 </span><span class="lineCov">          1 :     report.order_id = &quot;EX&quot; + cl_ord_id;</span></a>
+<a name="106"><span class="lineNum">     106 </span><span class="lineCov">          1 :     report.ord_status = OrdStatus::CANCELED;</span></a>
+<a name="107"><span class="lineNum">     107 </span><span class="lineCov">          1 :     report.exec_type = ExecType::CANCELED;</span></a>
+<a name="108"><span class="lineNum">     108 </span><span class="lineCov">          1 :     report.leaves_qty = 0;</span></a>
+<a name="109"><span class="lineNum">     109 </span><span class="lineCov">          1 :     report.cum_qty = 0;</span></a>
+<a name="110"><span class="lineNum">     110 </span><span class="lineCov">          1 :     report.is_unsolicited = true;</span></a>
+<a name="111"><span class="lineNum">     111 </span><span class="lineCov">          1 :     return report;</span></a>
+<a name="112"><span class="lineNum">     112 </span><span class="lineNoCov">          0 : }</span></a>
+<a name="113"><span class="lineNum">     113 </span>            : </a>
+<a name="114"><span class="lineNum">     114 </span>            : }  // namespace</a>
+<a name="115"><span class="lineNum">     115 </span>            : </a>
+<a name="116"><span class="lineNum">     116 </span>            : class OptionUnderlyerRefactoredTest : public ::testing::Test {</a>
+<a name="117"><span class="lineNum">     117 </span>            : protected:</a>
+<a name="118"><span class="lineNum">     118 </span>            :     // Define single-purpose metrics</a>
+<a name="119"><span class="lineNum">     119 </span>            :     using OpenOrdersPerSide = OrderCountMetric&lt;InstrumentSideKey, OpenStage&gt;;</a>
+<a name="120"><span class="lineNum">     120 </span>            :     using InFlightOrdersPerSide = OrderCountMetric&lt;InstrumentSideKey, InFlightStage&gt;;</a>
+<a name="121"><span class="lineNum">     121 </span>            :     using OpenQuotedInstruments = QuotedInstrumentCountMetric&lt;OpenStage&gt;;</a>
+<a name="122"><span class="lineNum">     122 </span>            : </a>
+<a name="123"><span class="lineNum">     123 </span>            :     using TestEngine = RiskAggregationEngineWithLimits&lt;</a>
+<a name="124"><span class="lineNum">     124 </span>            :         void,  // No provider needed</a>
+<a name="125"><span class="lineNum">     125 </span>            :         OpenOrdersPerSide,</a>
+<a name="126"><span class="lineNum">     126 </span>            :         InFlightOrdersPerSide,</a>
+<a name="127"><span class="lineNum">     127 </span>            :         OpenQuotedInstruments</a>
+<a name="128"><span class="lineNum">     128 </span>            :     &gt;;</a>
+<a name="129"><span class="lineNum">     129 </span>            : </a>
+<a name="130"><span class="lineNum">     130 </span>            :     TestEngine engine;</a>
+<a name="131"><span class="lineNum">     131 </span>            : </a>
+<a name="132"><span class="lineNum">     132 </span>            :     // Limits</a>
+<a name="133"><span class="lineNum">     133 </span>            :     static constexpr int64_t MAX_OPEN_PER_SIDE = 1;</a>
+<a name="134"><span class="lineNum">     134 </span>            :     static constexpr int64_t MAX_QUOTED_INSTRUMENTS = 2;</a>
+<a name="135"><span class="lineNum">     135 </span>            : </a>
+<a name="136"><span class="lineNum">     136 </span><span class="lineCov">          7 :     void SetUp() override {</span></a>
+<a name="137"><span class="lineNum">     137 </span>            :         // Configure limits using generic API</a>
+<a name="138"><span class="lineNum">     138 </span><span class="lineCov">          7 :         engine.set_default_limit&lt;OpenOrdersPerSide&gt;(MAX_OPEN_PER_SIDE);</span></a>
+<a name="139"><span class="lineNum">     139 </span><span class="lineCov">          7 :         engine.set_default_limit&lt;InFlightOrdersPerSide&gt;(MAX_OPEN_PER_SIDE);</span></a>
+<a name="140"><span class="lineNum">     140 </span><span class="lineCov">          7 :         engine.set_default_limit&lt;OpenQuotedInstruments&gt;(MAX_QUOTED_INSTRUMENTS);</span></a>
+<a name="141"><span class="lineNum">     141 </span><span class="lineCov">          7 :     }</span></a>
+<a name="142"><span class="lineNum">     142 </span>            : </a>
+<a name="143"><span class="lineNum">     143 </span>            :     // Accessors</a>
+<a name="144"><span class="lineNum">     144 </span><span class="lineCov">         32 :     int64_t open_orders(const std::string&amp; symbol, Side side) const {</span></a>
+<a name="145"><span class="lineNum">     145 </span><span class="lineCov">         64 :         return engine.get_metric&lt;OpenOrdersPerSide&gt;().get(</span></a>
+<a name="146"><span class="lineNum">     146 </span><span class="lineCov">         64 :             InstrumentSideKey{symbol, static_cast&lt;int&gt;(side)});</span></a>
+<a name="147"><span class="lineNum">     147 </span>            :     }</a>
+<a name="148"><span class="lineNum">     148 </span>            : </a>
+<a name="149"><span class="lineNum">     149 </span><span class="lineCov">         23 :     int64_t in_flight_orders(const std::string&amp; symbol, Side side) const {</span></a>
+<a name="150"><span class="lineNum">     150 </span><span class="lineCov">         46 :         return engine.get_metric&lt;InFlightOrdersPerSide&gt;().get(</span></a>
+<a name="151"><span class="lineNum">     151 </span><span class="lineCov">         46 :             InstrumentSideKey{symbol, static_cast&lt;int&gt;(side)});</span></a>
+<a name="152"><span class="lineNum">     152 </span>            :     }</a>
+<a name="153"><span class="lineNum">     153 </span>            : </a>
+<a name="154"><span class="lineNum">     154 </span><span class="lineCov">         27 :     int64_t quoted_instruments(const std::string&amp; underlyer) const {</span></a>
+<a name="155"><span class="lineNum">     155 </span><span class="lineCov">         27 :         return engine.get_metric&lt;OpenQuotedInstruments&gt;().get(UnderlyerKey{underlyer});</span></a>
+<a name="156"><span class="lineNum">     156 </span>            :     }</a>
+<a name="157"><span class="lineNum">     157 </span>            : </a>
+<a name="158"><span class="lineNum">     158 </span>            :     // Helper to assert all metrics at once</a>
+<a name="159"><span class="lineNum">     159 </span>            :     struct MetricState {</a>
+<a name="160"><span class="lineNum">     160 </span>            :         std::string symbol;</a>
+<a name="161"><span class="lineNum">     161 </span>            :         std::string underlyer;</a>
+<a name="162"><span class="lineNum">     162 </span>            :         int64_t open_bid = 0;</a>
+<a name="163"><span class="lineNum">     163 </span>            :         int64_t open_ask = 0;</a>
+<a name="164"><span class="lineNum">     164 </span>            :         int64_t in_flight_bid = 0;</a>
+<a name="165"><span class="lineNum">     165 </span>            :         int64_t in_flight_ask = 0;</a>
+<a name="166"><span class="lineNum">     166 </span>            :         int64_t quoted_count = 0;</a>
+<a name="167"><span class="lineNum">     167 </span>            :     };</a>
+<a name="168"><span class="lineNum">     168 </span>            : </a>
+<a name="169"><span class="lineNum">     169 </span><span class="lineCov">          9 :     void assert_state(const MetricState&amp; expected, const std::string&amp; step_name) const {</span></a>
+<a name="170"><span class="lineNum">     170 </span><span class="lineCov">          9 :         EXPECT_EQ(open_orders(expected.symbol, Side::BID), expected.open_bid)</span></a>
+<a name="171"><span class="lineNum">     171 </span><span class="lineCov">          9 :             &lt;&lt; step_name &lt;&lt; &quot;: open_bid for &quot; &lt;&lt; expected.symbol;</span></a>
+<a name="172"><span class="lineNum">     172 </span><span class="lineCov">          9 :         EXPECT_EQ(open_orders(expected.symbol, Side::ASK), expected.open_ask)</span></a>
+<a name="173"><span class="lineNum">     173 </span><span class="lineCov">          9 :             &lt;&lt; step_name &lt;&lt; &quot;: open_ask for &quot; &lt;&lt; expected.symbol;</span></a>
+<a name="174"><span class="lineNum">     174 </span><span class="lineCov">          9 :         EXPECT_EQ(in_flight_orders(expected.symbol, Side::BID), expected.in_flight_bid)</span></a>
+<a name="175"><span class="lineNum">     175 </span><span class="lineCov">          9 :             &lt;&lt; step_name &lt;&lt; &quot;: in_flight_bid for &quot; &lt;&lt; expected.symbol;</span></a>
+<a name="176"><span class="lineNum">     176 </span><span class="lineCov">          9 :         EXPECT_EQ(in_flight_orders(expected.symbol, Side::ASK), expected.in_flight_ask)</span></a>
+<a name="177"><span class="lineNum">     177 </span><span class="lineCov">          9 :             &lt;&lt; step_name &lt;&lt; &quot;: in_flight_ask for &quot; &lt;&lt; expected.symbol;</span></a>
+<a name="178"><span class="lineNum">     178 </span><span class="lineCov">          9 :         EXPECT_EQ(quoted_instruments(expected.underlyer), expected.quoted_count)</span></a>
+<a name="179"><span class="lineNum">     179 </span><span class="lineCov">          9 :             &lt;&lt; step_name &lt;&lt; &quot;: quoted_instruments for &quot; &lt;&lt; expected.underlyer;</span></a>
+<a name="180"><span class="lineNum">     180 </span><span class="lineCov">          9 :     }</span></a>
+<a name="181"><span class="lineNum">     181 </span>            : };</a>
+<a name="182"><span class="lineNum">     182 </span>            : </a>
+<a name="183"><span class="lineNum">     183 </span>            : // ============================================================================</a>
+<a name="184"><span class="lineNum">     184 </span>            : // Test: Full order lifecycle with explicit assertions after every step</a>
+<a name="185"><span class="lineNum">     185 </span>            : // ============================================================================</a>
+<a name="186"><span class="lineNum">     186 </span>            : </a>
+<a name="187"><span class="lineNum">     187 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, FullLifecycleWithExplicitAssertions) {</span></a>
+<a name="188"><span class="lineNum">     188 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="189"><span class="lineNum">     189 </span><span class="lineCov">          3 :     const std::string OPT2 = &quot;AAPL_OPT2&quot;;</span></a>
+<a name="190"><span class="lineNum">     190 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="191"><span class="lineNum">     191 </span>            : </a>
+<a name="192"><span class="lineNum">     192 </span>            :     // Initial state</a>
+<a name="193"><span class="lineNum">     193 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 0, 0, 0, 0, 0}, &quot;Initial&quot;);</span></a>
+<a name="194"><span class="lineNum">     194 </span>            : </a>
+<a name="195"><span class="lineNum">     195 </span>            :     // Step 1: INSERT ORD001 (OPT1, BID)</a>
+<a name="196"><span class="lineNum">     196 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="197"><span class="lineNum">     197 </span>            :     // in_flight_bid=1, quoted=0 (only counts open stage)</a>
+<a name="198"><span class="lineNum">     198 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 0, 0, 1, 0, 0}, &quot;Step 1: INSERT ORD001&quot;);</span></a>
+<a name="199"><span class="lineNum">     199 </span>            : </a>
+<a name="200"><span class="lineNum">     200 </span>            :     // Step 2: ACK ORD001</a>
+<a name="201"><span class="lineNum">     201 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="202"><span class="lineNum">     202 </span>            :     // open_bid=1, in_flight_bid=0, quoted=1</a>
+<a name="203"><span class="lineNum">     203 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 1, 0, 0, 0, 1}, &quot;Step 2: ACK ORD001&quot;);</span></a>
+<a name="204"><span class="lineNum">     204 </span>            : </a>
+<a name="205"><span class="lineNum">     205 </span>            :     // Step 3: INSERT ORD002 (OPT1, ASK)</a>
+<a name="206"><span class="lineNum">     206 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD002&quot;, OPT1, AAPL, Side::ASK, 5.5, 50));</span></a>
+<a name="207"><span class="lineNum">     207 </span>            :     // in_flight_ask=1, quoted still 1</a>
+<a name="208"><span class="lineNum">     208 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 1, 0, 0, 1, 1}, &quot;Step 3: INSERT ORD002&quot;);</span></a>
+<a name="209"><span class="lineNum">     209 </span>            : </a>
+<a name="210"><span class="lineNum">     210 </span>            :     // Step 4: ACK ORD002</a>
+<a name="211"><span class="lineNum">     211 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD002&quot;, 50));</span></a>
+<a name="212"><span class="lineNum">     212 </span>            :     // open_ask=1, in_flight_ask=0, quoted still 1 (same instrument)</a>
+<a name="213"><span class="lineNum">     213 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 1, 1, 0, 0, 1}, &quot;Step 4: ACK ORD002&quot;);</span></a>
+<a name="214"><span class="lineNum">     214 </span>            : </a>
+<a name="215"><span class="lineNum">     215 </span>            :     // Step 5: INSERT ORD003 (OPT2, BID) - new instrument</a>
+<a name="216"><span class="lineNum">     216 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD003&quot;, OPT2, AAPL, Side::BID, 3.0, 75));</span></a>
+<a name="217"><span class="lineNum">     217 </span>            :     // OPT2: in_flight_bid=1, quoted still 1 (only counts open)</a>
+<a name="218"><span class="lineNum">     218 </span><span class="lineCov">          1 :     EXPECT_EQ(in_flight_orders(OPT2, Side::BID), 1) &lt;&lt; &quot;Step 5: in_flight_bid for OPT2&quot;;</span></a>
+<a name="219"><span class="lineNum">     219 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1) &lt;&lt; &quot;Step 5: quoted_instruments for AAPL&quot;;</span></a>
+<a name="220"><span class="lineNum">     220 </span>            : </a>
+<a name="221"><span class="lineNum">     221 </span>            :     // Step 6: ACK ORD003</a>
+<a name="222"><span class="lineNum">     222 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD003&quot;, 75));</span></a>
+<a name="223"><span class="lineNum">     223 </span>            :     // OPT2: open_bid=1, quoted now 2</a>
+<a name="224"><span class="lineNum">     224 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT2, Side::BID), 1) &lt;&lt; &quot;Step 6: open_bid for OPT2&quot;;</span></a>
+<a name="225"><span class="lineNum">     225 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 2) &lt;&lt; &quot;Step 6: quoted_instruments for AAPL&quot;;</span></a>
+<a name="226"><span class="lineNum">     226 </span>            : </a>
+<a name="227"><span class="lineNum">     227 </span>            :     // Step 7: PARTIAL_FILL ORD001 (doesn't change counts)</a>
+<a name="228"><span class="lineNum">     228 </span><span class="lineCov">          3 :     engine.on_execution_report(create_fill(&quot;ORD001&quot;, 50, 50, 5.0));</span></a>
+<a name="229"><span class="lineNum">     229 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 1, 1, 0, 0, 2}, &quot;Step 7: PARTIAL_FILL ORD001&quot;);</span></a>
+<a name="230"><span class="lineNum">     230 </span>            : </a>
+<a name="231"><span class="lineNum">     231 </span>            :     // Step 8: FULL_FILL ORD001</a>
+<a name="232"><span class="lineNum">     232 </span><span class="lineCov">          3 :     engine.on_execution_report(create_fill(&quot;ORD001&quot;, 50, 0, 5.0));</span></a>
+<a name="233"><span class="lineNum">     233 </span>            :     // OPT1: open_bid=0, quoted still 2 (OPT1 still has ASK, OPT2 has BID)</a>
+<a name="234"><span class="lineNum">     234 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 0, 1, 0, 0, 2}, &quot;Step 8: FULL_FILL ORD001&quot;);</span></a>
+<a name="235"><span class="lineNum">     235 </span>            : </a>
+<a name="236"><span class="lineNum">     236 </span>            :     // Step 9: CANCEL_REQUEST ORD002</a>
+<a name="237"><span class="lineNum">     237 </span><span class="lineCov">          5 :     engine.on_order_cancel_request(create_cancel_request(&quot;CXL001&quot;, &quot;ORD002&quot;, OPT1, Side::ASK));</span></a>
+<a name="238"><span class="lineNum">     238 </span>            :     // OPT1: open_ask=0, in_flight_ask=1, quoted drops to 1 (OPT1 has no open orders, only OPT2 open)</a>
+<a name="239"><span class="lineNum">     239 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 0, 0, 0, 1, 1}, &quot;Step 9: CANCEL_REQUEST ORD002&quot;);</span></a>
+<a name="240"><span class="lineNum">     240 </span>            : </a>
+<a name="241"><span class="lineNum">     241 </span>            :     // Step 10: CANCEL_ACK ORD002</a>
+<a name="242"><span class="lineNum">     242 </span><span class="lineCov">          5 :     engine.on_execution_report(create_cancel_ack(&quot;CXL001&quot;, &quot;ORD002&quot;));</span></a>
+<a name="243"><span class="lineNum">     243 </span>            :     // OPT1: all zeros, quoted now 1 (only OPT2 remains)</a>
+<a name="244"><span class="lineNum">     244 </span><span class="lineCov">          4 :     assert_state({OPT1, AAPL, 0, 0, 0, 0, 1}, &quot;Step 10: CANCEL_ACK ORD002&quot;);</span></a>
+<a name="245"><span class="lineNum">     245 </span>            : </a>
+<a name="246"><span class="lineNum">     246 </span>            :     // Step 11: UNSOLICITED_CANCEL ORD003</a>
+<a name="247"><span class="lineNum">     247 </span><span class="lineCov">          3 :     engine.on_execution_report(create_unsolicited_cancel(&quot;ORD003&quot;));</span></a>
+<a name="248"><span class="lineNum">     248 </span>            :     // All orders gone, quoted=0</a>
+<a name="249"><span class="lineNum">     249 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT2, Side::BID), 0) &lt;&lt; &quot;Step 11: open_bid for OPT2&quot;;</span></a>
+<a name="250"><span class="lineNum">     250 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0) &lt;&lt; &quot;Step 11: quoted_instruments for AAPL&quot;;</span></a>
+<a name="251"><span class="lineNum">     251 </span><span class="lineCov">         11 : }</span></a>
+<a name="252"><span class="lineNum">     252 </span>            : </a>
+<a name="253"><span class="lineNum">     253 </span>            : // ============================================================================</a>
+<a name="254"><span class="lineNum">     254 </span>            : // Test: Limit enforcement with 3 metrics</a>
+<a name="255"><span class="lineNum">     255 </span>            : // ============================================================================</a>
+<a name="256"><span class="lineNum">     256 </span>            : </a>
+<a name="257"><span class="lineNum">     257 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, LimitEnforcement) {</span></a>
+<a name="258"><span class="lineNum">     258 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="259"><span class="lineNum">     259 </span><span class="lineCov">          3 :     const std::string OPT2 = &quot;AAPL_OPT2&quot;;</span></a>
+<a name="260"><span class="lineNum">     260 </span><span class="lineCov">          3 :     const std::string OPT3 = &quot;AAPL_OPT3&quot;;</span></a>
+<a name="261"><span class="lineNum">     261 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="262"><span class="lineNum">     262 </span>            : </a>
+<a name="263"><span class="lineNum">     263 </span>            :     // Step 1: INSERT &amp; ACK OPT1 BID</a>
+<a name="264"><span class="lineNum">     264 </span><span class="lineCov">          3 :     auto order1 = create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100);</span></a>
+<a name="265"><span class="lineNum">     265 </span><span class="lineCov">          1 :     engine.on_new_order_single(order1);</span></a>
+<a name="266"><span class="lineNum">     266 </span>            :     // After INSERT, order is in-flight, which counts towards the order count limit</a>
+<a name="267"><span class="lineNum">     267 </span><span class="lineCov">          3 :     auto check1 = engine.pre_trade_check(create_order(&quot;X&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="268"><span class="lineNum">     268 </span><span class="lineCov">          1 :     EXPECT_TRUE(check1.would_breach) &lt;&lt; &quot;After INSERT, in-flight counts towards limit&quot;;</span></a>
+<a name="269"><span class="lineNum">     269 </span><span class="lineCov">          1 :     EXPECT_TRUE(check1.has_breach(LimitType::ORDER_COUNT));</span></a>
+<a name="270"><span class="lineNum">     270 </span>            : </a>
+<a name="271"><span class="lineNum">     271 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="272"><span class="lineNum">     272 </span>            : </a>
+<a name="273"><span class="lineNum">     273 </span>            :     // OPT1 BID now at limit (1 open)</a>
+<a name="274"><span class="lineNum">     274 </span><span class="lineCov">          3 :     EXPECT_TRUE(engine.pre_trade_check(create_order(&quot;X&quot;, OPT1, AAPL, Side::BID, 5.0, 100)).would_breach)</span></a>
+<a name="275"><span class="lineNum">     275 </span><span class="lineCov">          1 :         &lt;&lt; &quot;OPT1 BID at limit&quot;;</span></a>
+<a name="276"><span class="lineNum">     276 </span><span class="lineCov">          3 :     EXPECT_FALSE(engine.pre_trade_check(create_order(&quot;X&quot;, OPT1, AAPL, Side::ASK, 5.0, 100)).would_breach)</span></a>
+<a name="277"><span class="lineNum">     277 </span><span class="lineCov">          1 :         &lt;&lt; &quot;OPT1 ASK not at limit&quot;;</span></a>
+<a name="278"><span class="lineNum">     278 </span><span class="lineCov">          3 :     EXPECT_FALSE(engine.pre_trade_check(create_order(&quot;X&quot;, OPT2, AAPL, Side::BID, 6.0, 50)).would_breach)</span></a>
+<a name="279"><span class="lineNum">     279 </span><span class="lineCov">          1 :         &lt;&lt; &quot;OPT2 BID not at limit&quot;;</span></a>
+<a name="280"><span class="lineNum">     280 </span>            : </a>
+<a name="281"><span class="lineNum">     281 </span>            :     // Step 2: INSERT &amp; ACK OPT2 ASK</a>
+<a name="282"><span class="lineNum">     282 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD002&quot;, OPT2, AAPL, Side::ASK, 6.0, 50));</span></a>
+<a name="283"><span class="lineNum">     283 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD002&quot;, 50));</span></a>
+<a name="284"><span class="lineNum">     284 </span>            : </a>
+<a name="285"><span class="lineNum">     285 </span>            :     // OPT2 ASK now at limit, quoted=2</a>
+<a name="286"><span class="lineNum">     286 </span><span class="lineCov">          3 :     EXPECT_TRUE(engine.pre_trade_check(create_order(&quot;X&quot;, OPT2, AAPL, Side::ASK, 6.0, 50)).would_breach)</span></a>
+<a name="287"><span class="lineNum">     287 </span><span class="lineCov">          1 :         &lt;&lt; &quot;OPT2 ASK at limit&quot;;</span></a>
+<a name="288"><span class="lineNum">     288 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 2) &lt;&lt; &quot;Quoted instruments = 2&quot;;</span></a>
+<a name="289"><span class="lineNum">     289 </span>            : </a>
+<a name="290"><span class="lineNum">     290 </span>            :     // Step 3: Try to INSERT OPT3 - would breach quoted instruments limit</a>
+<a name="291"><span class="lineNum">     291 </span><span class="lineCov">          3 :     auto opt3_order = create_order(&quot;ORD003&quot;, OPT3, AAPL, Side::BID, 4.0, 100);</span></a>
+<a name="292"><span class="lineNum">     292 </span><span class="lineCov">          1 :     auto check3 = engine.pre_trade_check(opt3_order);</span></a>
+<a name="293"><span class="lineNum">     293 </span>            :     // OPT3 doesn't have an order count breach (per-side is free)</a>
+<a name="294"><span class="lineNum">     294 </span>            :     // But it would breach quoted instruments limit</a>
+<a name="295"><span class="lineNum">     295 </span><span class="lineCov">          1 :     EXPECT_TRUE(check3.would_breach) &lt;&lt; &quot;OPT3 should breach quoted instruments limit&quot;;</span></a>
+<a name="296"><span class="lineNum">     296 </span><span class="lineCov">          1 :     EXPECT_TRUE(check3.has_breach(LimitType::QUOTED_INSTRUMENTS));</span></a>
+<a name="297"><span class="lineNum">     297 </span><span class="lineCov">          2 : }</span></a>
+<a name="298"><span class="lineNum">     298 </span>            : </a>
+<a name="299"><span class="lineNum">     299 </span>            : // ============================================================================</a>
+<a name="300"><span class="lineNum">     300 </span>            : // Test: NACK releases resources</a>
+<a name="301"><span class="lineNum">     301 </span>            : // ============================================================================</a>
+<a name="302"><span class="lineNum">     302 </span>            : </a>
+<a name="303"><span class="lineNum">     303 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, NackReleasesResources) {</span></a>
+<a name="304"><span class="lineNum">     304 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="305"><span class="lineNum">     305 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="306"><span class="lineNum">     306 </span>            : </a>
+<a name="307"><span class="lineNum">     307 </span>            :     // INSERT</a>
+<a name="308"><span class="lineNum">     308 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="309"><span class="lineNum">     309 </span><span class="lineCov">          1 :     EXPECT_EQ(in_flight_orders(OPT1, Side::BID), 1) &lt;&lt; &quot;After INSERT: in_flight=1&quot;;</span></a>
+<a name="310"><span class="lineNum">     310 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0) &lt;&lt; &quot;After INSERT: quoted=0 (not open yet)&quot;;</span></a>
+<a name="311"><span class="lineNum">     311 </span>            : </a>
+<a name="312"><span class="lineNum">     312 </span>            :     // NACK</a>
+<a name="313"><span class="lineNum">     313 </span><span class="lineCov">          3 :     engine.on_execution_report(create_nack(&quot;ORD001&quot;));</span></a>
+<a name="314"><span class="lineNum">     314 </span><span class="lineCov">          1 :     EXPECT_EQ(in_flight_orders(OPT1, Side::BID), 0) &lt;&lt; &quot;After NACK: in_flight=0&quot;;</span></a>
+<a name="315"><span class="lineNum">     315 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 0) &lt;&lt; &quot;After NACK: open=0&quot;;</span></a>
+<a name="316"><span class="lineNum">     316 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0) &lt;&lt; &quot;After NACK: quoted=0&quot;;</span></a>
+<a name="317"><span class="lineNum">     317 </span><span class="lineCov">          2 : }</span></a>
+<a name="318"><span class="lineNum">     318 </span>            : </a>
+<a name="319"><span class="lineNum">     319 </span>            : // ============================================================================</a>
+<a name="320"><span class="lineNum">     320 </span>            : // Test: Multiple underlyers are independent</a>
+<a name="321"><span class="lineNum">     321 </span>            : // ============================================================================</a>
+<a name="322"><span class="lineNum">     322 </span>            : </a>
+<a name="323"><span class="lineNum">     323 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, MultipleUnderlyersIndependent) {</span></a>
+<a name="324"><span class="lineNum">     324 </span><span class="lineCov">          3 :     const std::string AAPL_OPT = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="325"><span class="lineNum">     325 </span><span class="lineCov">          3 :     const std::string MSFT_OPT = &quot;MSFT_OPT1&quot;;</span></a>
+<a name="326"><span class="lineNum">     326 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="327"><span class="lineNum">     327 </span><span class="lineCov">          3 :     const std::string MSFT = &quot;MSFT&quot;;</span></a>
+<a name="328"><span class="lineNum">     328 </span>            : </a>
+<a name="329"><span class="lineNum">     329 </span>            :     // AAPL order</a>
+<a name="330"><span class="lineNum">     330 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, AAPL_OPT, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="331"><span class="lineNum">     331 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="332"><span class="lineNum">     332 </span>            : </a>
+<a name="333"><span class="lineNum">     333 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(AAPL_OPT, Side::BID), 1);</span></a>
+<a name="334"><span class="lineNum">     334 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1);</span></a>
+<a name="335"><span class="lineNum">     335 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(MSFT), 0);</span></a>
+<a name="336"><span class="lineNum">     336 </span>            : </a>
+<a name="337"><span class="lineNum">     337 </span>            :     // MSFT order</a>
+<a name="338"><span class="lineNum">     338 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD002&quot;, MSFT_OPT, MSFT, Side::ASK, 10.0, 50));</span></a>
+<a name="339"><span class="lineNum">     339 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD002&quot;, 50));</span></a>
+<a name="340"><span class="lineNum">     340 </span>            : </a>
+<a name="341"><span class="lineNum">     341 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(MSFT_OPT, Side::ASK), 1);</span></a>
+<a name="342"><span class="lineNum">     342 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1);</span></a>
+<a name="343"><span class="lineNum">     343 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(MSFT), 1);</span></a>
+<a name="344"><span class="lineNum">     344 </span>            : </a>
+<a name="345"><span class="lineNum">     345 </span>            :     // Cancel AAPL - doesn't affect MSFT</a>
+<a name="346"><span class="lineNum">     346 </span><span class="lineCov">          5 :     engine.on_order_cancel_request(create_cancel_request(&quot;CXL001&quot;, &quot;ORD001&quot;, AAPL_OPT, Side::BID));</span></a>
+<a name="347"><span class="lineNum">     347 </span><span class="lineCov">          5 :     engine.on_execution_report(create_cancel_ack(&quot;CXL001&quot;, &quot;ORD001&quot;));</span></a>
+<a name="348"><span class="lineNum">     348 </span>            : </a>
+<a name="349"><span class="lineNum">     349 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0);</span></a>
+<a name="350"><span class="lineNum">     350 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(MSFT), 1);</span></a>
+<a name="351"><span class="lineNum">     351 </span><span class="lineCov">          2 : }</span></a>
+<a name="352"><span class="lineNum">     352 </span>            : </a>
+<a name="353"><span class="lineNum">     353 </span>            : // ============================================================================</a>
+<a name="354"><span class="lineNum">     354 </span>            : // Test: Same instrument, multiple orders (only counts unique instruments)</a>
+<a name="355"><span class="lineNum">     355 </span>            : // ============================================================================</a>
+<a name="356"><span class="lineNum">     356 </span>            : </a>
+<a name="357"><span class="lineNum">     357 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, SameInstrumentMultipleOrders) {</span></a>
+<a name="358"><span class="lineNum">     358 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="359"><span class="lineNum">     359 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="360"><span class="lineNum">     360 </span>            : </a>
+<a name="361"><span class="lineNum">     361 </span>            :     // First order on OPT1</a>
+<a name="362"><span class="lineNum">     362 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="363"><span class="lineNum">     363 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="364"><span class="lineNum">     364 </span>            : </a>
+<a name="365"><span class="lineNum">     365 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);</span></a>
+<a name="366"><span class="lineNum">     366 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1);</span></a>
+<a name="367"><span class="lineNum">     367 </span>            : </a>
+<a name="368"><span class="lineNum">     368 </span>            :     // Second order on SAME instrument (ASK side)</a>
+<a name="369"><span class="lineNum">     369 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD002&quot;, OPT1, AAPL, Side::ASK, 5.5, 50));</span></a>
+<a name="370"><span class="lineNum">     370 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD002&quot;, 50));</span></a>
+<a name="371"><span class="lineNum">     371 </span>            : </a>
+<a name="372"><span class="lineNum">     372 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);</span></a>
+<a name="373"><span class="lineNum">     373 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::ASK), 1);</span></a>
+<a name="374"><span class="lineNum">     374 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1) &lt;&lt; &quot;Still 1 - same instrument&quot;;</span></a>
+<a name="375"><span class="lineNum">     375 </span>            : </a>
+<a name="376"><span class="lineNum">     376 </span>            :     // Fill BID order</a>
+<a name="377"><span class="lineNum">     377 </span><span class="lineCov">          3 :     engine.on_execution_report(create_fill(&quot;ORD001&quot;, 100, 0, 5.0));</span></a>
+<a name="378"><span class="lineNum">     378 </span>            : </a>
+<a name="379"><span class="lineNum">     379 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);</span></a>
+<a name="380"><span class="lineNum">     380 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::ASK), 1);</span></a>
+<a name="381"><span class="lineNum">     381 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1) &lt;&lt; &quot;Still 1 - ASK still open&quot;;</span></a>
+<a name="382"><span class="lineNum">     382 </span>            : </a>
+<a name="383"><span class="lineNum">     383 </span>            :     // Fill ASK order</a>
+<a name="384"><span class="lineNum">     384 </span><span class="lineCov">          3 :     engine.on_execution_report(create_fill(&quot;ORD002&quot;, 50, 0, 5.5));</span></a>
+<a name="385"><span class="lineNum">     385 </span>            : </a>
+<a name="386"><span class="lineNum">     386 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);</span></a>
+<a name="387"><span class="lineNum">     387 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::ASK), 0);</span></a>
+<a name="388"><span class="lineNum">     388 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0) &lt;&lt; &quot;Now 0 - no more orders&quot;;</span></a>
+<a name="389"><span class="lineNum">     389 </span><span class="lineCov">          2 : }</span></a>
+<a name="390"><span class="lineNum">     390 </span>            : </a>
+<a name="391"><span class="lineNum">     391 </span>            : // ============================================================================</a>
+<a name="392"><span class="lineNum">     392 </span>            : // Test: Clear resets all metrics</a>
+<a name="393"><span class="lineNum">     393 </span>            : // ============================================================================</a>
+<a name="394"><span class="lineNum">     394 </span>            : </a>
+<a name="395"><span class="lineNum">     395 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, ClearResetsAll) {</span></a>
+<a name="396"><span class="lineNum">     396 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="397"><span class="lineNum">     397 </span><span class="lineCov">          3 :     const std::string OPT2 = &quot;AAPL_OPT2&quot;;</span></a>
+<a name="398"><span class="lineNum">     398 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="399"><span class="lineNum">     399 </span>            : </a>
+<a name="400"><span class="lineNum">     400 </span>            :     // Add some orders</a>
+<a name="401"><span class="lineNum">     401 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="402"><span class="lineNum">     402 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="403"><span class="lineNum">     403 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD002&quot;, OPT2, AAPL, Side::ASK, 6.0, 50));</span></a>
+<a name="404"><span class="lineNum">     404 </span>            : </a>
+<a name="405"><span class="lineNum">     405 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);</span></a>
+<a name="406"><span class="lineNum">     406 </span><span class="lineCov">          1 :     EXPECT_EQ(in_flight_orders(OPT2, Side::ASK), 1);</span></a>
+<a name="407"><span class="lineNum">     407 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 1);</span></a>
+<a name="408"><span class="lineNum">     408 </span>            : </a>
+<a name="409"><span class="lineNum">     409 </span>            :     // Clear</a>
+<a name="410"><span class="lineNum">     410 </span><span class="lineCov">          1 :     engine.clear();</span></a>
+<a name="411"><span class="lineNum">     411 </span>            : </a>
+<a name="412"><span class="lineNum">     412 </span><span class="lineCov">          1 :     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);</span></a>
+<a name="413"><span class="lineNum">     413 </span><span class="lineCov">          1 :     EXPECT_EQ(in_flight_orders(OPT2, Side::ASK), 0);</span></a>
+<a name="414"><span class="lineNum">     414 </span><span class="lineCov">          1 :     EXPECT_EQ(quoted_instruments(AAPL), 0);</span></a>
+<a name="415"><span class="lineNum">     415 </span><span class="lineCov">          2 : }</span></a>
+<a name="416"><span class="lineNum">     416 </span>            : </a>
+<a name="417"><span class="lineNum">     417 </span>            : // ============================================================================</a>
+<a name="418"><span class="lineNum">     418 </span>            : // Test: Pre-trade check result contains useful information</a>
+<a name="419"><span class="lineNum">     419 </span>            : // ============================================================================</a>
+<a name="420"><span class="lineNum">     420 </span>            : </a>
+<a name="421"><span class="lineNum">     421 </span><span class="lineCov">          4 : TEST_F(OptionUnderlyerRefactoredTest, PreTradeCheckResultDetails) {</span></a>
+<a name="422"><span class="lineNum">     422 </span><span class="lineCov">          3 :     const std::string OPT1 = &quot;AAPL_OPT1&quot;;</span></a>
+<a name="423"><span class="lineNum">     423 </span><span class="lineCov">          3 :     const std::string AAPL = &quot;AAPL&quot;;</span></a>
+<a name="424"><span class="lineNum">     424 </span>            : </a>
+<a name="425"><span class="lineNum">     425 </span>            :     // Send order to hit limit</a>
+<a name="426"><span class="lineNum">     426 </span><span class="lineCov">          3 :     engine.on_new_order_single(create_order(&quot;ORD001&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="427"><span class="lineNum">     427 </span><span class="lineCov">          3 :     engine.on_execution_report(create_ack(&quot;ORD001&quot;, 100));</span></a>
+<a name="428"><span class="lineNum">     428 </span>            : </a>
+<a name="429"><span class="lineNum">     429 </span>            :     // Check pre-trade for new order on same instrument-side</a>
+<a name="430"><span class="lineNum">     430 </span><span class="lineCov">          3 :     auto result = engine.pre_trade_check(create_order(&quot;ORD002&quot;, OPT1, AAPL, Side::BID, 5.0, 100));</span></a>
+<a name="431"><span class="lineNum">     431 </span><span class="lineCov">          1 :     EXPECT_TRUE(result.would_breach);</span></a>
+<a name="432"><span class="lineNum">     432 </span><span class="lineCov">          1 :     EXPECT_FALSE(result);  // operator bool returns !would_breach</span></a>
+<a name="433"><span class="lineNum">     433 </span>            : </a>
+<a name="434"><span class="lineNum">     434 </span>            :     // Verify breach details</a>
+<a name="435"><span class="lineNum">     435 </span><span class="lineCov">          1 :     const auto* breach = result.get_breach(LimitType::ORDER_COUNT);</span></a>
+<a name="436"><span class="lineNum">     436 </span><span class="lineCov">          1 :     ASSERT_NE(breach, nullptr);</span></a>
+<a name="437"><span class="lineNum">     437 </span><span class="lineCov">          1 :     EXPECT_DOUBLE_EQ(breach-&gt;current_usage, 1.0);</span></a>
+<a name="438"><span class="lineNum">     438 </span><span class="lineCov">          1 :     EXPECT_DOUBLE_EQ(breach-&gt;hypothetical_usage, 2.0);</span></a>
+<a name="439"><span class="lineNum">     439 </span><span class="lineCov">          1 :     EXPECT_DOUBLE_EQ(breach-&gt;limit_value, 1.0);</span></a>
+<a name="440"><span class="lineNum">     440 </span>            : </a>
+<a name="441"><span class="lineNum">     441 </span>            :     // Verify to_string()</a>
+<a name="442"><span class="lineNum">     442 </span><span class="lineCov">          2 :     std::string str = result.to_string();</span></a>
+<a name="443"><span class="lineNum">     443 </span><span class="lineCov">          1 :     EXPECT_NE(str.find(&quot;ORDER_COUNT&quot;), std::string::npos);</span></a>
+<a name="444"><span class="lineNum">     444 </span><span class="lineCov">          1 :     EXPECT_NE(str.find(&quot;FAILED&quot;), std::string::npos);</span></a>
+<a name="445"><span class="lineNum">     445 </span><span class="lineCov">          1 : }</span></a>
+</pre>
+      </td>
+    </tr>
+  </table>
+  <br>
+
+  <table width="100%" border=0 cellspacing=0 cellpadding=0>
+    <tr><td class="ruler"><img src="../../glass.png" width=3 height=3 alt=""></td></tr>
+    <tr><td class="versionInfo">Generated by: <a href="https://github.com/linux-test-project/lcov" target="_parent">LCOV version 1.16</a></td></tr>
+  </table>
+  <br>
+
+</body>
+</html>

@@ -27,3 +27,13 @@ build:asan --linkopt=-fsanitize=address
 
 # Always enable Address Sanitizer for tests
 test --config=asan
+
+# Coverage configuration (ASAN incompatible with coverage)
+coverage --config=coverage
+build:coverage --compilation_mode=dbg
+build:coverage --cxxopt=-g
+build:coverage --cxxopt=-O0
+build:coverage --cxxopt=--coverage
+build:coverage --linkopt=--coverage
+coverage --combined_report=lcov
+coverage --instrumentation_filter="//src[/:]"
