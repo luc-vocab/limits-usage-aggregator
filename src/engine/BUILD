@@ -33,6 +33,7 @@ cc_library(
         ":accessor_mixin",
         ":order_state",
         "//src/fix",
+        "//src/instrument",
     ],
 )
 

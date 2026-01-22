@@ -8,11 +8,14 @@ cc_library(
         "delta_metrics.hpp",
         "notional_metrics.hpp",
         "order_count_metrics.hpp",
+        "staged_metrics.hpp",
     ],
     deps = [
         "//src/aggregation",
         "//src/aggregation:multi_group",
+        "//src/aggregation:order_stage",
         "//src/engine:accessor_mixin",
         "//src/engine:order_state",
+        "//src/instrument",
     ],
 )

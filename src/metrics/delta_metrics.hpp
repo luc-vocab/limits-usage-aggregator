@@ -2,6 +2,9 @@
 
 #include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
+#include "../instrument/instrument.hpp"
+#include <unordered_map>
+#include <set>
 
 // Forward declarations
 namespace engine {
@@ -15,25 +18,57 @@ namespace metrics {
 // Delta Metrics - Tracks gross and net delta at various grouping levels
 // ============================================================================
 //
-// Uses MultiGroupAggregator to automatically aggregate delta values at:
+// Uses quantity-based tracking with lazy delta computation via InstrumentProvider.
+// Delta exposure is computed as: quantity * delta * contract_size * underlyer_spot * fx_rate
+//
+// Tracks quantities at:
 // - Global level (system-wide totals)
 // - Per-underlyer level (e.g., AAPL, MSFT)
 //
 
 class DeltaMetrics {
 private:
-    aggregation::MultiGroupAggregator<
-        aggregation::DeltaCombiner,
-        aggregation::GlobalKey,
-        aggregation::UnderlyerKey
-    > aggregator_;
+    instrument::InstrumentProvider* provider_ = nullptr;
 
-    aggregation::DeltaValue make_delta_value(double delta_exposure, fix::Side side) const {
-        double signed_delta = (side == fix::Side::BID) ? delta_exposure : -delta_exposure;
-        return aggregation::DeltaValue{std::abs(delta_exposure), signed_delta};
+    // Track quantities per instrument and side
+    // Key: symbol, Value: quantity
+    std::unordered_map<std::string, int64_t> instrument_bid_qty_;
+    std::unordered_map<std::string, int64_t> instrument_ask_qty_;
+
+    // Track which instruments belong to which underlyer
+    std::unordered_map<std::string, std::set<std::string>> underlyer_instruments_;
+
+    // Global quantity totals (for quick access)
+    int64_t global_bid_qty_ = 0;
+    int64_t global_ask_qty_ = 0;
+
+    // Get underlyer for a symbol
+    std::string get_underlyer(const std::string& symbol) const {
+        if (provider_) {
+            return provider_->get_underlyer(symbol);
+        }
+        return symbol;  // Default: symbol is its own underlyer
+    }
+
+    // Compute delta exposure for a single instrument
+    double compute_instrument_delta(const std::string& symbol, int64_t quantity) const {
+        if (!provider_) {
+            return 0.0;
+        }
+        return provider_->compute_delta_exposure(symbol, quantity);
     }
 
 public:
+    DeltaMetrics() = default;
+
+    void set_instrument_provider(instrument::InstrumentProvider* provider) {
+        provider_ = provider;
+    }
+
+    instrument::InstrumentProvider* instrument_provider() const {
+        return provider_;
+    }
+
     // ========================================================================
     // Generic metric interface (used by template RiskAggregationEngine)
     // ========================================================================
@@ -45,59 +80,138 @@ public:
     void on_order_removed(const engine::TrackedOrder& order);
 
     // Called when order is modified (update ack)
-    void on_order_updated(const engine::TrackedOrder& order,
-                          double old_delta_exposure, double old_notional);
+    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty);
 
     // Called on partial fill
-    void on_partial_fill(const engine::TrackedOrder& order,
-                         double filled_delta_exposure, double filled_notional);
+    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty);
 
     // ========================================================================
     // Legacy interface (for backward compatibility and direct usage)
     // ========================================================================
 
-    void add_order(const std::string& underlyer, double delta_exposure, fix::Side side) {
-        auto dv = make_delta_value(delta_exposure, side);
-        aggregator_.bucket<aggregation::GlobalKey>().add(aggregation::GlobalKey::instance(), dv);
-        aggregator_.bucket<aggregation::UnderlyerKey>().add(aggregation::UnderlyerKey{underlyer}, dv);
+    void add_order(const std::string& symbol, const std::string& underlyer,
+                   int64_t quantity, fix::Side side) {
+        // Track underlyer mapping
+        underlyer_instruments_[underlyer].insert(symbol);
+
+        if (side == fix::Side::BID) {
+            instrument_bid_qty_[symbol] += quantity;
+            global_bid_qty_ += quantity;
+        } else {
+            instrument_ask_qty_[symbol] += quantity;
+            global_ask_qty_ += quantity;
+        }
     }
 
-    void remove_order(const std::string& underlyer, double delta_exposure, fix::Side side) {
-        auto dv = make_delta_value(delta_exposure, side);
-        aggregator_.bucket<aggregation::GlobalKey>().remove(aggregation::GlobalKey::instance(), dv);
-        aggregator_.bucket<aggregation::UnderlyerKey>().remove(aggregation::UnderlyerKey{underlyer}, dv);
+    void remove_order(const std::string& symbol, const std::string& underlyer,
+                      int64_t quantity, fix::Side side) {
+        if (side == fix::Side::BID) {
+            auto it = instrument_bid_qty_.find(symbol);
+            if (it != instrument_bid_qty_.end()) {
+                it->second -= quantity;
+                global_bid_qty_ -= quantity;
+                if (it->second <= 0) {
+                    instrument_bid_qty_.erase(it);
+                }
+            }
+        } else {
+            auto it = instrument_ask_qty_.find(symbol);
+            if (it != instrument_ask_qty_.end()) {
+                it->second -= quantity;
+                global_ask_qty_ -= quantity;
+                if (it->second <= 0) {
+                    instrument_ask_qty_.erase(it);
+                }
+            }
+        }
+
+        // Clean up underlyer mapping if no more instruments
+        cleanup_underlyer_mapping(symbol, underlyer);
     }
 
-    void update_order(const std::string& underlyer,
-                      double old_delta_exposure, double new_delta_exposure,
-                      fix::Side side) {
-        remove_order(underlyer, old_delta_exposure, side);
-        add_order(underlyer, new_delta_exposure, side);
+    void update_order(const std::string& symbol, const std::string& underlyer,
+                      int64_t old_quantity, int64_t new_quantity, fix::Side side) {
+        remove_order(symbol, underlyer, old_quantity, side);
+        add_order(symbol, underlyer, new_quantity, side);
     }
 
-    void partial_fill(const std::string& underlyer, double filled_delta, fix::Side side) {
-        remove_order(underlyer, filled_delta, side);
+    void partial_fill(const std::string& symbol, const std::string& underlyer,
+                      int64_t filled_qty, fix::Side side) {
+        remove_order(symbol, underlyer, filled_qty, side);
     }
 
     // ========================================================================
-    // Accessors
+    // Accessors - compute delta values lazily using InstrumentProvider
     // ========================================================================
 
+    // Quantity accessors
+    int64_t global_bid_quantity() const { return global_bid_qty_; }
+    int64_t global_ask_quantity() const { return global_ask_qty_; }
+    int64_t global_quantity() const { return global_bid_qty_ + global_ask_qty_; }
+
+    int64_t instrument_bid_quantity(const std::string& symbol) const {
+        auto it = instrument_bid_qty_.find(symbol);
+        return it != instrument_bid_qty_.end() ? it->second : 0;
+    }
+
+    int64_t instrument_ask_quantity(const std::string& symbol) const {
+        auto it = instrument_ask_qty_.find(symbol);
+        return it != instrument_ask_qty_.end() ? it->second : 0;
+    }
+
+    // Delta value accessors (computed lazily)
     aggregation::DeltaValue global_delta() const {
-        return aggregator_.get(aggregation::GlobalKey::instance());
+        double gross = 0.0;
+        double net = 0.0;
+
+        // Sum delta exposure across all instruments
+        for (const auto& [symbol, qty] : instrument_bid_qty_) {
+            double delta_exp = compute_instrument_delta(symbol, qty);
+            gross += std::abs(delta_exp);
+            net += delta_exp;  // Bids are positive
+        }
+
+        for (const auto& [symbol, qty] : instrument_ask_qty_) {
+            double delta_exp = compute_instrument_delta(symbol, qty);
+            gross += std::abs(delta_exp);
+            net -= delta_exp;  // Asks are negative
+        }
+
+        return aggregation::DeltaValue{gross, net};
     }
 
     aggregation::DeltaValue underlyer_delta(const std::string& underlyer) const {
-        return aggregator_.get(aggregation::UnderlyerKey{underlyer});
+        double gross = 0.0;
+        double net = 0.0;
+
+        auto it = underlyer_instruments_.find(underlyer);
+        if (it == underlyer_instruments_.end()) {
+            return aggregation::DeltaValue{0.0, 0.0};
+        }
+
+        for (const auto& symbol : it->second) {
+            // Bid side
+            auto bid_it = instrument_bid_qty_.find(symbol);
+            if (bid_it != instrument_bid_qty_.end()) {
+                double delta_exp = compute_instrument_delta(symbol, bid_it->second);
+                gross += std::abs(delta_exp);
+                net += delta_exp;
+            }
+
+            // Ask side
+            auto ask_it = instrument_ask_qty_.find(symbol);
+            if (ask_it != instrument_ask_qty_.end()) {
+                double delta_exp = compute_instrument_delta(symbol, ask_it->second);
+                gross += std::abs(delta_exp);
+                net -= delta_exp;
+            }
+        }
+
+        return aggregation::DeltaValue{gross, net};
     }
 
-    double global_gross_delta() const {
-        return global_delta().gross;
-    }
-
-    double global_net_delta() const {
-        return global_delta().net;
-    }
+    double global_gross_delta() const { return global_delta().gross; }
+    double global_net_delta() const { return global_delta().net; }
 
     double underlyer_gross_delta(const std::string& underlyer) const {
         return underlyer_delta(underlyer).gross;
@@ -108,11 +222,36 @@ public:
     }
 
     std::vector<aggregation::UnderlyerKey> underlyers() const {
-        return aggregator_.keys<aggregation::UnderlyerKey>();
+        std::vector<aggregation::UnderlyerKey> result;
+        for (const auto& [underlyer, _] : underlyer_instruments_) {
+            result.push_back(aggregation::UnderlyerKey{underlyer});
+        }
+        return result;
     }
 
     void clear() {
-        aggregator_.clear();
+        instrument_bid_qty_.clear();
+        instrument_ask_qty_.clear();
+        underlyer_instruments_.clear();
+        global_bid_qty_ = 0;
+        global_ask_qty_ = 0;
+    }
+
+private:
+    void cleanup_underlyer_mapping(const std::string& symbol, const std::string& underlyer) {
+        // Check if instrument still has quantities
+        bool has_bid = instrument_bid_qty_.find(symbol) != instrument_bid_qty_.end();
+        bool has_ask = instrument_ask_qty_.find(symbol) != instrument_ask_qty_.end();
+
+        if (!has_bid && !has_ask) {
+            auto it = underlyer_instruments_.find(underlyer);
+            if (it != underlyer_instruments_.end()) {
+                it->second.erase(symbol);
+                if (it->second.empty()) {
+                    underlyer_instruments_.erase(it);
+                }
+            }
+        }
     }
 };
 
@@ -124,26 +263,19 @@ public:
 namespace metrics {
 
 inline void DeltaMetrics::on_order_added(const engine::TrackedOrder& order) {
-    auto dv = make_delta_value(order.delta_exposure(), order.side);
-    aggregator_.add(order, dv);
+    add_order(order.symbol, order.underlyer, order.leaves_qty, order.side);
 }
 
 inline void DeltaMetrics::on_order_removed(const engine::TrackedOrder& order) {
-    auto dv = make_delta_value(order.delta_exposure(), order.side);
-    aggregator_.remove(order, dv);
+    remove_order(order.symbol, order.underlyer, order.leaves_qty, order.side);
 }
 
-inline void DeltaMetrics::on_order_updated(const engine::TrackedOrder& order,
-                                            double old_delta_exposure, double /*old_notional*/) {
-    auto old_dv = make_delta_value(old_delta_exposure, order.side);
-    auto new_dv = make_delta_value(order.delta_exposure(), order.side);
-    aggregator_.update(order, old_dv, new_dv);
+inline void DeltaMetrics::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    update_order(order.symbol, order.underlyer, old_qty, order.leaves_qty, order.side);
 }
 
-inline void DeltaMetrics::on_partial_fill(const engine::TrackedOrder& order,
-                                           double filled_delta_exposure, double /*filled_notional*/) {
-    auto dv = make_delta_value(filled_delta_exposure, order.side);
-    aggregator_.remove(order, dv);
+inline void DeltaMetrics::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    partial_fill(order.symbol, order.underlyer, filled_qty, order.side);
 }
 
 } // namespace metrics
@@ -190,6 +322,15 @@ public:
 
     aggregation::DeltaValue underlyer_delta(const std::string& underlyer) const {
         return delta_metrics_().underlyer_delta(underlyer);
+    }
+
+    // Quantity accessors
+    int64_t global_bid_quantity() const {
+        return delta_metrics_().global_bid_quantity();
+    }
+
+    int64_t global_ask_quantity() const {
+        return delta_metrics_().global_ask_quantity();
     }
 };
 

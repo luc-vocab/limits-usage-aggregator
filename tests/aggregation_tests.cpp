@@ -2,6 +2,7 @@
 #include "../src/aggregation/grouping.hpp"
 #include "../src/aggregation/aggregation_traits.hpp"
 #include "../src/aggregation/aggregation_core.hpp"
+#include "../src/instrument/instrument.hpp"
 #include "../src/metrics/delta_metrics.hpp"
 #include "../src/metrics/order_count_metrics.hpp"
 #include "../src/metrics/notional_metrics.hpp"
@@ -208,49 +209,40 @@ TEST(AggregationEngineTest, Clear) {
 }
 
 // ============================================================================
-// Delta Metrics Tests - Parameterized for side variations
+// Delta Metrics Tests - Quantity-based tracking with InstrumentProvider
 // ============================================================================
 
-struct DeltaMetricsAddOrderParam {
-    std::string name;
-    fix::Side side;
-    double expected_gross;
-    double expected_net;
-};
-
-class DeltaMetricsAddOrderTest : public ::testing::TestWithParam<DeltaMetricsAddOrderParam> {};
-
-TEST_P(DeltaMetricsAddOrderTest, AddsOrderCorrectly) {
-    auto param = GetParam();
-    metrics::DeltaMetrics metrics;
-
-    metrics.add_order("AAPL", 100.0, param.side);
-
-    EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), param.expected_gross);
-    EXPECT_DOUBLE_EQ(metrics.global_net_delta(), param.expected_net);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    SideVariations,
-    DeltaMetricsAddOrderTest,
-    ::testing::Values(
-        DeltaMetricsAddOrderParam{"BidOrder", fix::Side::BID, 100.0, 100.0},
-        DeltaMetricsAddOrderParam{"AskOrder", fix::Side::ASK, 100.0, -100.0}
-    ),
-    [](const ::testing::TestParamInfo<DeltaMetricsAddOrderParam>& info) {
-        return info.param.name;
-    }
-);
-
+// Test fixture with InstrumentProvider for delta computation
 class DeltaMetricsTest : public ::testing::Test {
 protected:
     metrics::DeltaMetrics metrics;
+    instrument::StaticInstrumentProvider provider;
+
+    void SetUp() override {
+        // Add test instruments with delta=1.0 for simple math
+        // Using add_equity: spot=1.0 so delta_exp = qty * delta(1.0) * contract_size(1) * spot(1) * fx(1) = qty
+        provider.add_equity("AAPL", 1.0);
+        provider.add_equity("MSFT", 1.0);
+        metrics.set_instrument_provider(&provider);
+    }
 };
 
+TEST_F(DeltaMetricsTest, AddBidOrder) {
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 100.0);
+    EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 100.0);
+}
+
+TEST_F(DeltaMetricsTest, AddAskOrder) {
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::ASK);
+    EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 100.0);
+    EXPECT_DOUBLE_EQ(metrics.global_net_delta(), -100.0);
+}
+
 TEST_F(DeltaMetricsTest, MultipleOrders) {
-    metrics.add_order("AAPL", 100.0, fix::Side::BID);
-    metrics.add_order("AAPL", 50.0, fix::Side::ASK);
-    metrics.add_order("MSFT", 75.0, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 50, fix::Side::ASK);
+    metrics.add_order("MSFT", "MSFT", 75, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 225.0);  // 100 + 50 + 75
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 125.0);    // 100 - 50 + 75
@@ -260,27 +252,36 @@ TEST_F(DeltaMetricsTest, MultipleOrders) {
 }
 
 TEST_F(DeltaMetricsTest, RemoveOrder) {
-    metrics.add_order("AAPL", 100.0, fix::Side::BID);
-    metrics.remove_order("AAPL", 100.0, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.remove_order("AAPL", "AAPL", 100, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 0.0);
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 0.0);
 }
 
 TEST_F(DeltaMetricsTest, UpdateOrder) {
-    metrics.add_order("AAPL", 100.0, fix::Side::BID);
-    metrics.update_order("AAPL", 100.0, 150.0, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.update_order("AAPL", "AAPL", 100, 150, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 150.0);
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 150.0);
 }
 
 TEST_F(DeltaMetricsTest, PartialFill) {
-    metrics.add_order("AAPL", 100.0, fix::Side::BID);
-    metrics.partial_fill("AAPL", 40.0, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.partial_fill("AAPL", "AAPL", 40, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 60.0);
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 60.0);
+}
+
+TEST_F(DeltaMetricsTest, QuantityAccessors) {
+    metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 50, fix::Side::ASK);
+
+    EXPECT_EQ(metrics.global_bid_quantity(), 100);
+    EXPECT_EQ(metrics.global_ask_quantity(), 50);
+    EXPECT_EQ(metrics.global_quantity(), 150);
 }
 
 // ============================================================================
@@ -340,18 +341,31 @@ TEST_F(OrderCountMetricsTest, QuotedInstrumentsDecrement) {
 }
 
 // ============================================================================
-// Notional Metrics Tests
+// Notional Metrics Tests - Quantity-based tracking with InstrumentProvider
 // ============================================================================
 
 class NotionalMetricsTest : public ::testing::Test {
 protected:
     metrics::NotionalMetrics metrics;
+    instrument::StaticInstrumentProvider provider;
+
+    void SetUp() override {
+        // Add test instruments
+        // For notional: qty * contract_size * spot * fx
+        // Using add_option: spot=100.0, underlyer_spot=100.0, delta=0.5, contract_size=1.0 (override default 100)
+        // So notional = qty * 1.0 * 100.0 * 1.0 = qty * 100
+        provider.add_option("AAPL_OPT1", "AAPL", 100.0, 100.0, 0.5, 1.0, 1.0);
+        provider.add_option("AAPL_OPT2", "AAPL", 100.0, 100.0, 0.3, 1.0, 1.0);
+        provider.add_option("MSFT_OPT1", "MSFT", 80.0, 80.0, 0.4, 1.0, 1.0);
+        metrics.set_instrument_provider(&provider);
+    }
 };
 
 TEST_F(NotionalMetricsTest, AddOrders) {
-    metrics.add_order("STRAT1", "PORT1", 10000.0);
-    metrics.add_order("STRAT1", "PORT1", 5000.0);
-    metrics.add_order("STRAT2", "PORT1", 8000.0);
+    // notional = quantity * contract_size * spot * fx_rate = quantity * 100
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);  // 100 * 100 = 10000
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 50);   // 50 * 100 = 5000
+    metrics.add_order("MSFT_OPT1", "STRAT2", "PORT1", 100);  // 100 * 80 = 8000
 
     EXPECT_DOUBLE_EQ(metrics.global_notional(), 23000.0);
     EXPECT_DOUBLE_EQ(metrics.strategy_notional("STRAT1"), 15000.0);
@@ -360,34 +374,42 @@ TEST_F(NotionalMetricsTest, AddOrders) {
 }
 
 TEST_F(NotionalMetricsTest, RemoveOrders) {
-    metrics.add_order("STRAT1", "PORT1", 10000.0);
-    metrics.remove_order("STRAT1", "PORT1", 10000.0);
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);
+    metrics.remove_order("AAPL_OPT1", "STRAT1", "PORT1", 100);
 
     EXPECT_DOUBLE_EQ(metrics.global_notional(), 0.0);
     EXPECT_DOUBLE_EQ(metrics.strategy_notional("STRAT1"), 0.0);
 }
 
 TEST_F(NotionalMetricsTest, UpdateOrder) {
-    metrics.add_order("STRAT1", "PORT1", 10000.0);
-    metrics.update_order("STRAT1", "PORT1", 10000.0, 15000.0);
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);  // 10000 notional
+    metrics.update_order("AAPL_OPT1", "STRAT1", "PORT1", 100, 150);  // now 15000 notional
 
     EXPECT_DOUBLE_EQ(metrics.strategy_notional("STRAT1"), 15000.0);
 }
 
 TEST_F(NotionalMetricsTest, PartialFill) {
-    metrics.add_order("STRAT1", "PORT1", 10000.0);
-    metrics.partial_fill("STRAT1", "PORT1", 4000.0);
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);  // 10000 notional
+    metrics.partial_fill("AAPL_OPT1", "STRAT1", "PORT1", 40);  // remove 40 -> 60 * 100 = 6000
 
     EXPECT_DOUBLE_EQ(metrics.strategy_notional("STRAT1"), 6000.0);
 }
 
 TEST_F(NotionalMetricsTest, EmptyStrategy) {
     // Order with empty strategy should only update global and portfolio
-    metrics.add_order("", "PORT1", 10000.0);
+    metrics.add_order("AAPL_OPT1", "", "PORT1", 100);  // 10000 notional
 
     EXPECT_DOUBLE_EQ(metrics.global_notional(), 10000.0);
     EXPECT_DOUBLE_EQ(metrics.strategy_notional(""), 0.0);  // Empty string strategy not tracked
     EXPECT_DOUBLE_EQ(metrics.portfolio_notional("PORT1"), 10000.0);
+}
+
+TEST_F(NotionalMetricsTest, QuantityAccessors) {
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);
+    metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 50);
+
+    EXPECT_EQ(metrics.global_quantity(), 150);
+    EXPECT_EQ(metrics.instrument_quantity("AAPL_OPT1"), 150);
 }
 
 // ============================================================================
@@ -395,6 +417,19 @@ TEST_F(NotionalMetricsTest, EmptyStrategy) {
 // ============================================================================
 
 #include "../src/engine/risk_engine.hpp"
+
+// Test fixture with InstrumentProvider for engine tests
+class GenericEngineTestFixture : public ::testing::Test {
+protected:
+    instrument::StaticInstrumentProvider provider;
+
+    void SetUp() override {
+        // AAPL: spot=100, contract_size=1, fx=1, delta=0.5
+        // notional = qty * contract_size(1) * spot(100) * fx(1) = qty * 100
+        // delta_exp = qty * delta(0.5) * contract_size(1) * underlyer_spot(100) * fx(1) = qty * 50
+        provider.add_option("AAPL", "AAPL", 100.0, 100.0, 0.5, 1.0, 1.0);
+    }
+};
 
 TEST(GenericEngineTest, EmptyEngine) {
     // Engine with no metrics
@@ -404,8 +439,8 @@ TEST(GenericEngineTest, EmptyEngine) {
     EXPECT_EQ(engine.active_order_count(), 0u);
 }
 
-TEST(GenericEngineTest, DeltaOnlyEngine) {
-    engine::DeltaOnlyEngine engine;
+TEST_F(GenericEngineTestFixture, DeltaOnlyEngine) {
+    engine::DeltaOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
     EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
@@ -423,20 +458,20 @@ TEST(GenericEngineTest, DeltaOnlyEngine) {
     order.underlyer = "AAPL";
     order.side = fix::Side::BID;
     order.price = 100.0;
-    order.quantity = 10.0;
-    order.delta = 0.5;
+    order.quantity = 10;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
     engine.on_new_order_single(order);
 
-    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 5.0);  // 10 * 0.5
-    EXPECT_DOUBLE_EQ(engine.global_net_delta(), 5.0);    // BID = positive
-    EXPECT_DOUBLE_EQ(engine.underlyer_gross_delta("AAPL"), 5.0);
+    // delta_exp = qty(10) * delta(0.5) * contract_size(1) * underlyer_spot(100) * fx(1) = 500
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 500.0);
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), 500.0);    // BID = positive
+    EXPECT_DOUBLE_EQ(engine.underlyer_gross_delta("AAPL"), 500.0);
 }
 
-TEST(GenericEngineTest, OrderCountOnlyEngine) {
-    engine::OrderCountOnlyEngine engine;
+TEST_F(GenericEngineTestFixture, OrderCountOnlyEngine) {
+    engine::OrderCountOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
     EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
@@ -454,8 +489,7 @@ TEST(GenericEngineTest, OrderCountOnlyEngine) {
     order.underlyer = "AAPL";
     order.side = fix::Side::BID;
     order.price = 100.0;
-    order.quantity = 10.0;
-    order.delta = 0.5;
+    order.quantity = 10;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
@@ -466,8 +500,8 @@ TEST(GenericEngineTest, OrderCountOnlyEngine) {
     EXPECT_EQ(engine.quoted_instruments_count("AAPL"), 1);
 }
 
-TEST(GenericEngineTest, NotionalOnlyEngine) {
-    engine::NotionalOnlyEngine engine;
+TEST_F(GenericEngineTestFixture, NotionalOnlyEngine) {
+    engine::NotionalOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
     EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
@@ -485,26 +519,26 @@ TEST(GenericEngineTest, NotionalOnlyEngine) {
     order.underlyer = "AAPL";
     order.side = fix::Side::BID;
     order.price = 100.0;
-    order.quantity = 10.0;
-    order.delta = 0.5;
+    order.quantity = 10;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
     engine.on_new_order_single(order);
 
-    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);  // 10 * 100
+    // notional = qty(10) * contract_size(1) * spot(100) * fx(1) = 1000
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);
     EXPECT_DOUBLE_EQ(engine.strategy_notional("STRAT1"), 1000.0);
     EXPECT_DOUBLE_EQ(engine.portfolio_notional("PORT1"), 1000.0);
 }
 
-TEST(GenericEngineTest, CustomMetricCombination) {
+TEST_F(GenericEngineTestFixture, CustomMetricCombination) {
     // Engine with only Delta and Notional metrics
     using DeltaNotionalEngine = engine::GenericRiskAggregationEngine<
         metrics::DeltaMetrics,
         metrics::NotionalMetrics
     >;
 
-    DeltaNotionalEngine engine;
+    DeltaNotionalEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 2u);
     EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
@@ -522,20 +556,21 @@ TEST(GenericEngineTest, CustomMetricCombination) {
     order.underlyer = "AAPL";
     order.side = fix::Side::ASK;
     order.price = 50.0;
-    order.quantity = 20.0;
-    order.delta = 0.3;
+    order.quantity = 20;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
     engine.on_new_order_single(order);
 
-    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 6.0);   // 20 * 0.3
-    EXPECT_DOUBLE_EQ(engine.global_net_delta(), -6.0);    // ASK = negative
-    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);   // 20 * 50
+    // delta_exp = qty(20) * delta(0.5) * contract_size(1) * underlyer_spot(100) * fx(1) = 1000
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 1000.0);
+    EXPECT_DOUBLE_EQ(engine.global_net_delta(), -1000.0);    // ASK = negative
+    // notional = qty(20) * contract_size(1) * spot(100) * fx(1) = 2000
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 2000.0);
 }
 
-TEST(GenericEngineTest, StandardEngineHasAllAccessors) {
-    engine::RiskAggregationEngine engine;
+TEST_F(GenericEngineTestFixture, StandardEngineHasAllAccessors) {
+    engine::RiskAggregationEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 3u);
     EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
@@ -556,20 +591,19 @@ TEST(GenericEngineTest, StandardEngineHasAllAccessors) {
     order.underlyer = "AAPL";
     order.side = fix::Side::BID;
     order.price = 100.0;
-    order.quantity = 10.0;
-    order.delta = 0.5;
+    order.quantity = 10;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
     engine.on_new_order_single(order);
 
-    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 5.0);
+    EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 500.0);  // 10 * 0.5 * 100
     EXPECT_EQ(engine.bid_order_count("AAPL"), 1);
-    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);
+    EXPECT_DOUBLE_EQ(engine.global_notional(), 1000.0);    // 10 * 100
 }
 
-TEST(GenericEngineTest, GetMetricAccess) {
-    engine::RiskAggregationEngine engine;
+TEST_F(GenericEngineTestFixture, GetMetricAccess) {
+    engine::RiskAggregationEngine engine(&provider);
 
     // Direct metric access via get_metric
     auto& delta = engine.get_metric<metrics::DeltaMetrics>();
@@ -583,15 +617,14 @@ TEST(GenericEngineTest, GetMetricAccess) {
     order.underlyer = "AAPL";
     order.side = fix::Side::BID;
     order.price = 100.0;
-    order.quantity = 10.0;
-    order.delta = 0.5;
+    order.quantity = 10;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
 
     engine.on_new_order_single(order);
 
     // Access metrics directly
-    EXPECT_DOUBLE_EQ(delta.global_gross_delta(), 5.0);
+    EXPECT_DOUBLE_EQ(delta.global_gross_delta(), 500.0);
     EXPECT_EQ(order_count.bid_order_count("AAPL"), 1);
     EXPECT_DOUBLE_EQ(notional.global_notional(), 1000.0);
 }
@@ -610,8 +643,7 @@ engine::TrackedOrder make_test_order(
     const std::string& portfolio_id,
     fix::Side side,
     double price,
-    double quantity,
-    double delta
+    int64_t quantity
 ) {
     engine::TrackedOrder order;
     order.key.cl_ord_id = "TEST001";
@@ -623,15 +655,14 @@ engine::TrackedOrder make_test_order(
     order.price = price;
     order.quantity = quantity;
     order.leaves_qty = quantity;
-    order.cum_qty = 0.0;
-    order.delta = delta;
+    order.cum_qty = 0;
     order.state = engine::OrderState::OPEN;
     return order;
 }
 
 TEST(KeyExtractorTest, GlobalKeyAlwaysApplicable) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     EXPECT_TRUE(KeyExtractor<GlobalKey>::is_applicable(order));
     EXPECT_EQ(KeyExtractor<GlobalKey>::extract(order), GlobalKey::instance());
@@ -639,7 +670,7 @@ TEST(KeyExtractorTest, GlobalKeyAlwaysApplicable) {
 
 TEST(KeyExtractorTest, UnderlyerKeyExtraction) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     EXPECT_TRUE(KeyExtractor<UnderlyerKey>::is_applicable(order));
     EXPECT_EQ(KeyExtractor<UnderlyerKey>::extract(order), UnderlyerKey{"AAPL"});
@@ -647,9 +678,9 @@ TEST(KeyExtractorTest, UnderlyerKeyExtraction) {
 
 TEST(KeyExtractorTest, StrategyKeyApplicability) {
     auto order_with_strategy = make_test_order("AAPL", "AAPL", "STRAT1", "PORT1",
-                                                fix::Side::BID, 100.0, 10.0, 0.5);
+                                                fix::Side::BID, 100.0, 10);
     auto order_without_strategy = make_test_order("AAPL", "AAPL", "", "PORT1",
-                                                   fix::Side::BID, 100.0, 10.0, 0.5);
+                                                   fix::Side::BID, 100.0, 10);
 
     EXPECT_TRUE(KeyExtractor<StrategyKey>::is_applicable(order_with_strategy));
     EXPECT_FALSE(KeyExtractor<StrategyKey>::is_applicable(order_without_strategy));
@@ -659,9 +690,9 @@ TEST(KeyExtractorTest, StrategyKeyApplicability) {
 
 TEST(KeyExtractorTest, PortfolioKeyApplicability) {
     auto order_with_portfolio = make_test_order("AAPL", "AAPL", "STRAT1", "PORT1",
-                                                 fix::Side::BID, 100.0, 10.0, 0.5);
+                                                 fix::Side::BID, 100.0, 10);
     auto order_without_portfolio = make_test_order("AAPL", "AAPL", "STRAT1", "",
-                                                    fix::Side::BID, 100.0, 10.0, 0.5);
+                                                    fix::Side::BID, 100.0, 10);
 
     EXPECT_TRUE(KeyExtractor<PortfolioKey>::is_applicable(order_with_portfolio));
     EXPECT_FALSE(KeyExtractor<PortfolioKey>::is_applicable(order_without_portfolio));
@@ -671,9 +702,9 @@ TEST(KeyExtractorTest, PortfolioKeyApplicability) {
 
 TEST(KeyExtractorTest, InstrumentSideKeyExtraction) {
     auto bid_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                      fix::Side::BID, 100.0, 10.0, 0.5);
+                                      fix::Side::BID, 100.0, 10);
     auto ask_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                      fix::Side::ASK, 100.0, 10.0, 0.5);
+                                      fix::Side::ASK, 100.0, 10);
 
     EXPECT_TRUE(KeyExtractor<InstrumentSideKey>::is_applicable(bid_order));
 
@@ -696,7 +727,7 @@ protected:
 
 TEST_F(MultiGroupAggregatorTest, AddToAllApplicableBuckets) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     DeltaValue dv{50.0, 25.0};
     delta_agg.add(order, dv);
@@ -714,7 +745,7 @@ TEST_F(MultiGroupAggregatorTest, AddToAllApplicableBuckets) {
 
 TEST_F(MultiGroupAggregatorTest, RemoveFromAllApplicableBuckets) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     DeltaValue dv{50.0, 25.0};
     delta_agg.add(order, dv);
@@ -732,7 +763,7 @@ TEST_F(MultiGroupAggregatorTest, RemoveFromAllApplicableBuckets) {
 
 TEST_F(MultiGroupAggregatorTest, UpdateInAllApplicableBuckets) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     DeltaValue old_dv{50.0, 25.0};
     DeltaValue new_dv{75.0, 40.0};
@@ -748,7 +779,7 @@ TEST_F(MultiGroupAggregatorTest, UpdateInAllApplicableBuckets) {
 TEST_F(MultiGroupAggregatorTest, SkipsNonApplicableBuckets) {
     // Order with empty strategy_id
     auto order = make_test_order("AAPL230120C150", "AAPL", "", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     notional_agg.add(order, 1000.0);
 
@@ -762,9 +793,9 @@ TEST_F(MultiGroupAggregatorTest, SkipsNonApplicableBuckets) {
 
 TEST_F(MultiGroupAggregatorTest, MultipleUnderlyers) {
     auto aapl_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                       fix::Side::BID, 100.0, 10.0, 0.5);
+                                       fix::Side::BID, 100.0, 10);
     auto msft_order = make_test_order("MSFT230120C250", "MSFT", "STRAT1", "PORT1",
-                                       fix::Side::ASK, 100.0, 10.0, 0.3);
+                                       fix::Side::ASK, 100.0, 10);
 
     delta_agg.add(aapl_order, DeltaValue{100.0, 50.0});
     delta_agg.add(msft_order, DeltaValue{75.0, -30.0});
@@ -786,7 +817,7 @@ TEST_F(MultiGroupAggregatorTest, MultipleUnderlyers) {
 
 TEST_F(MultiGroupAggregatorTest, ClearRemovesAll) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     delta_agg.add(order, DeltaValue{50.0, 25.0});
     delta_agg.clear();
@@ -814,7 +845,7 @@ TEST_F(MultiGroupAggregatorTest, KeyCount) {
 
 TEST_F(MultiGroupAggregatorTest, DirectBucketAccess) {
     auto order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                  fix::Side::BID, 100.0, 10.0, 0.5);
+                                  fix::Side::BID, 100.0, 10);
 
     // Add directly to bucket
     delta_agg.bucket<GlobalKey>().add(GlobalKey::instance(), DeltaValue{100.0, 50.0});
@@ -829,9 +860,9 @@ TEST_F(MultiGroupAggregatorTest, DirectBucketAccess) {
 
 TEST_F(MultiGroupAggregatorTest, KeysRetrieval) {
     auto aapl_order = make_test_order("AAPL230120C150", "AAPL", "STRAT1", "PORT1",
-                                       fix::Side::BID, 100.0, 10.0, 0.5);
+                                       fix::Side::BID, 100.0, 10);
     auto msft_order = make_test_order("MSFT230120C250", "MSFT", "STRAT2", "PORT1",
-                                       fix::Side::ASK, 100.0, 10.0, 0.3);
+                                       fix::Side::ASK, 100.0, 10);
 
     delta_agg.add(aapl_order, DeltaValue{100.0, 50.0});
     delta_agg.add(msft_order, DeltaValue{75.0, -30.0});

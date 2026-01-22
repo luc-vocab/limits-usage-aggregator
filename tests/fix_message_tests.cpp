@@ -152,7 +152,7 @@ TEST(FixParserTest, ParseFixFields) {
 TEST(NewOrderSingleTest, Parse) {
     std::string msg = "35=D\x01" "11=ORD001\x01" "55=AAPL\x01" "311=AAPL\x01"
                       "54=1\x01" "38=100\x01" "44=150.50\x01"
-                      "7001=STRAT1\x01" "7002=PORT1\x01" "7003=0.5\x01";
+                      "7001=STRAT1\x01" "7002=PORT1\x01";
     auto fields = parse_fix_fields(msg);
     auto order = parse_new_order_single(fields);
 
@@ -160,25 +160,11 @@ TEST(NewOrderSingleTest, Parse) {
     EXPECT_EQ(order.symbol, "AAPL");
     EXPECT_EQ(order.underlyer, "AAPL");
     EXPECT_EQ(order.side, Side::BID);
-    EXPECT_DOUBLE_EQ(order.quantity, 100.0);
+    EXPECT_EQ(order.quantity, 100);
     EXPECT_DOUBLE_EQ(order.price, 150.50);
     EXPECT_EQ(order.strategy_id, "STRAT1");
     EXPECT_EQ(order.portfolio_id, "PORT1");
-    EXPECT_DOUBLE_EQ(order.delta, 0.5);
-}
-
-TEST(NewOrderSingleTest, NotionalCalculation) {
-    NewOrderSingle order;
-    order.price = 100.0;
-    order.quantity = 50.0;
-    EXPECT_DOUBLE_EQ(order.notional(), 5000.0);
-}
-
-TEST(NewOrderSingleTest, DeltaExposureCalculation) {
-    NewOrderSingle order;
-    order.delta = 0.5;
-    order.quantity = 100.0;
-    EXPECT_DOUBLE_EQ(order.delta_exposure(), 50.0);
+    // Note: delta is now obtained from InstrumentProvider, not from the order
 }
 
 TEST(NewOrderSingleTest, SerializeAndParse) {
@@ -191,7 +177,6 @@ TEST(NewOrderSingleTest, SerializeAndParse) {
     order.price = 150.50;
     order.strategy_id = "STRAT1";
     order.portfolio_id = "PORT1";
-    order.delta = 1.0;
 
     std::string serialized = serialize_new_order_single(order);
     auto fields = parse_fix_fields(serialized);
@@ -215,7 +200,7 @@ TEST(OrderCancelReplaceRequestTest, Parse) {
     EXPECT_EQ(req.orig_key.cl_ord_id, "ORD001");
     EXPECT_EQ(req.symbol, "AAPL");
     EXPECT_EQ(req.side, Side::BID);
-    EXPECT_DOUBLE_EQ(req.quantity, 150.0);
+    EXPECT_EQ(req.quantity, 150);
     EXPECT_DOUBLE_EQ(req.price, 155.00);
 }
 
@@ -355,9 +340,9 @@ TEST(ExecutionReportTest, PartialFillQuantities) {
     auto fields = parse_fix_fields(msg);
     auto report = parse_execution_report(fields);
 
-    EXPECT_DOUBLE_EQ(report.leaves_qty, 50.0);
-    EXPECT_DOUBLE_EQ(report.cum_qty, 50.0);
-    EXPECT_DOUBLE_EQ(report.last_qty, 50.0);
+    EXPECT_EQ(report.leaves_qty, 50);
+    EXPECT_EQ(report.cum_qty, 50);
+    EXPECT_EQ(report.last_qty, 50);
     EXPECT_DOUBLE_EQ(report.last_px, 150.25);
 }
 

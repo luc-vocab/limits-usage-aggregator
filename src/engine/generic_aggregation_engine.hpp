@@ -3,6 +3,7 @@
 #include "accessor_mixin.hpp"
 #include "order_state.hpp"
 #include "../fix/fix_messages.hpp"
+#include "../instrument/instrument.hpp"
 #include <tuple>
 
 namespace engine {
@@ -24,10 +25,11 @@ namespace engine {
 // define its AccessorMixin specialization in its own header file.
 //
 // Each metric type must implement the following interface:
+//   - void set_instrument_provider(InstrumentProvider* provider)
 //   - void on_order_added(const TrackedOrder& order)
 //   - void on_order_removed(const TrackedOrder& order)
-//   - void on_order_updated(const TrackedOrder& order, double old_delta, double old_notional)
-//   - void on_partial_fill(const TrackedOrder& order, double filled_delta, double filled_notional)
+//   - void on_order_updated(const TrackedOrder& order, int64_t old_qty)
+//   - void on_partial_fill(const TrackedOrder& order, int64_t filled_qty)
 //   - void clear()
 //
 // ============================================================================
@@ -36,6 +38,7 @@ template<typename... Metrics>
 class GenericRiskAggregationEngine
     : public AccessorMixin<GenericRiskAggregationEngine<Metrics...>, Metrics>... {
 private:
+    instrument::InstrumentProvider* provider_ = nullptr;
     OrderBook order_book_;
     std::tuple<Metrics...> metrics_;
 
@@ -47,6 +50,31 @@ private:
     }
 
 public:
+    GenericRiskAggregationEngine() = default;
+
+    explicit GenericRiskAggregationEngine(instrument::InstrumentProvider* provider)
+        : provider_(provider) {
+        // Set provider on all metrics
+        for_each_metric([provider](auto& metric) {
+            metric.set_instrument_provider(provider);
+        });
+    }
+
+    // ========================================================================
+    // InstrumentProvider access
+    // ========================================================================
+
+    void set_instrument_provider(instrument::InstrumentProvider* provider) {
+        provider_ = provider;
+        for_each_metric([provider](auto& metric) {
+            metric.set_instrument_provider(provider);
+        });
+    }
+
+    instrument::InstrumentProvider* instrument_provider() const {
+        return provider_;
+    }
+
     // ========================================================================
     // Metric access
     // ========================================================================
@@ -183,10 +211,9 @@ private:
         if (result.has_value()) {
             auto* updated_order = order_book_.resolve_order(msg.key);
             if (updated_order) {
-                for_each_metric([updated_order, &result](auto& metric) {
-                    metric.on_order_updated(*updated_order,
-                                            result->old_delta_exposure,
-                                            result->old_notional);
+                int64_t old_qty = result->old_leaves_qty;
+                for_each_metric([updated_order, old_qty](auto& metric) {
+                    metric.on_order_updated(*updated_order, old_qty);
                 });
             }
         }
@@ -220,10 +247,9 @@ private:
 
         auto result = order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
         if (result.has_value()) {
-            for_each_metric([order, &result](auto& metric) {
-                metric.on_partial_fill(*order,
-                                       result->filled_delta_exposure,
-                                       result->filled_notional);
+            int64_t filled_qty = result->filled_qty;
+            for_each_metric([order, filled_qty](auto& metric) {
+                metric.on_partial_fill(*order, filled_qty);
             });
         }
     }

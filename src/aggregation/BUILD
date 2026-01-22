@@ -22,3 +22,11 @@ cc_library(
         "//src/engine:order_state",
     ],
 )
+
+cc_library(
+    name = "order_stage",
+    hdrs = ["order_stage.hpp"],
+    deps = [
+        "//src/engine:order_state",
+    ],
+)

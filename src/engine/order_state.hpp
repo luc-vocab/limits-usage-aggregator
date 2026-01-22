@@ -39,20 +39,19 @@ struct TrackedOrder {
     std::string portfolio_id;
     fix::Side side;
     double price;
-    double quantity;           // Original/current order quantity
-    double leaves_qty;         // Remaining unfilled quantity
-    double cum_qty;            // Cumulative filled quantity
-    double delta;              // Delta per contract
+    int64_t quantity;          // Original/current order quantity
+    int64_t leaves_qty;        // Remaining unfilled quantity
+    int64_t cum_qty;           // Cumulative filled quantity
+    // Note: delta is now obtained from InstrumentProvider, not stored per order
     OrderState state;
 
     // Pending replace values (stored while awaiting ack)
     std::optional<double> pending_price;
-    std::optional<double> pending_quantity;
+    std::optional<int64_t> pending_quantity;
     std::optional<fix::OrderKey> pending_key;  // New ClOrdID for pending replace
 
-    // Computed values
-    double notional() const { return price * leaves_qty; }
-    double delta_exposure() const { return delta * leaves_qty; }
+    // Note: notional() and delta_exposure() are now computed via InstrumentProvider
+    // See InstrumentProvider::compute_notional() and compute_delta_exposure()
 
     // Check if order is in a terminal state
     bool is_terminal() const {
@@ -92,8 +91,7 @@ public:
         order.price = msg.price;
         order.quantity = msg.quantity;
         order.leaves_qty = msg.quantity;
-        order.cum_qty = 0.0;
-        order.delta = msg.delta;
+        order.cum_qty = 0;
         order.state = OrderState::PENDING_NEW;
 
         orders_[msg.key] = std::move(order);
@@ -158,9 +156,8 @@ public:
     // Complete a successful replace - returns old values for metrics update
     struct ReplaceResult {
         double old_price;
-        double old_leaves_qty;
-        double old_notional;
-        double old_delta_exposure;
+        int64_t old_leaves_qty;
+        // Note: old_notional and old_delta_exposure computed via InstrumentProvider
     };
 
     std::optional<ReplaceResult> complete_replace(const fix::OrderKey& orig_key) {
@@ -171,8 +168,6 @@ public:
             ReplaceResult result;
             result.old_price = order->price;
             result.old_leaves_qty = order->leaves_qty;
-            result.old_notional = order->notional();
-            result.old_delta_exposure = order->delta_exposure();
 
             // Apply pending values
             order->price = order->pending_price.value();
@@ -247,19 +242,16 @@ public:
 
     // Apply a fill - returns fill details for metrics update
     struct FillResult {
-        double filled_qty;
-        double filled_notional;
-        double filled_delta_exposure;
+        int64_t filled_qty;
+        // Note: filled_notional and filled_delta_exposure computed via InstrumentProvider
         bool is_complete;
     };
 
-    std::optional<FillResult> apply_fill(const fix::OrderKey& key, double last_qty, double /*last_px*/) {
+    std::optional<FillResult> apply_fill(const fix::OrderKey& key, int64_t last_qty, double /*last_px*/) {
         auto* order = resolve_order(key);
         if (order && !order->is_terminal()) {
             FillResult result;
             result.filled_qty = last_qty;
-            result.filled_notional = last_qty * order->price;  // Use order price for notional
-            result.filled_delta_exposure = last_qty * order->delta;
 
             order->leaves_qty -= last_qty;
             order->cum_qty += last_qty;

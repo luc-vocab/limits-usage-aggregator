@@ -3,6 +3,7 @@
 #include "fix_types.hpp"
 #include <string>
 #include <optional>
+#include <cstdint>
 
 namespace fix {
 
@@ -19,14 +20,8 @@ struct NewOrderSingle {
     std::string portfolio_id;
     Side side;
     double price;
-    double quantity;
-    double delta;  // Delta per contract (for options)
-
-    // Computed notional
-    double notional() const { return price * quantity; }
-
-    // Computed delta exposure
-    double delta_exposure() const { return delta * quantity; }
+    int64_t quantity;
+    // Note: delta is now obtained from InstrumentProvider, not from the order
 };
 
 // Order Cancel/Replace Request (MsgType=G)
@@ -36,7 +31,7 @@ struct OrderCancelReplaceRequest {
     std::string symbol;
     Side side;
     double price;
-    double quantity;
+    int64_t quantity;
 };
 
 // Order Cancel Request (MsgType=F)
@@ -87,9 +82,9 @@ struct ExecutionReport {
     std::string symbol;
     OrdStatus ord_status;
     ExecType exec_type;
-    double leaves_qty;                 // Remaining quantity
-    double cum_qty;                    // Cumulative filled quantity
-    double last_qty;                   // Last fill quantity (0 if not a fill)
+    int64_t leaves_qty;                // Remaining quantity
+    int64_t cum_qty;                   // Cumulative filled quantity
+    int64_t last_qty;                  // Last fill quantity (0 if not a fill)
     double last_px;                    // Last fill price (0 if not a fill)
     std::optional<std::string> text;   // Rejection reason text
     bool is_unsolicited;               // True if exchange-initiated cancel

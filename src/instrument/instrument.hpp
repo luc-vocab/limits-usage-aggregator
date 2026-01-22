@@ -1,0 +1,222 @@
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <stdexcept>
+#include <cstdint>
+
+namespace instrument {
+
+// ============================================================================
+// InstrumentProvider - Interface for accessing instrument market data
+// ============================================================================
+//
+// This interface provides access to instrument-specific data needed for
+// computing notional values and delta exposure. Implementations can be:
+// - StaticInstrumentProvider: Pre-loaded instrument data (for testing)
+// - MarketDataInstrumentProvider: Live market data feed
+// - CachedInstrumentProvider: Cached/refreshable market data
+//
+
+class InstrumentProvider {
+public:
+    virtual ~InstrumentProvider() = default;
+
+    // Core instrument data
+    virtual double get_spot_price(const std::string& symbol) const = 0;
+    virtual double get_fx_rate(const std::string& symbol) const = 0;  // Returns 1.0 for USD
+    virtual double get_contract_size(const std::string& symbol) const = 0;
+    virtual std::string get_underlyer(const std::string& symbol) const = 0;
+    virtual double get_underlyer_spot(const std::string& symbol) const = 0;
+    virtual double get_delta(const std::string& symbol) const = 0;
+
+    // Computed notional: quantity * contract_size * spot_price * fx_rate
+    double compute_notional(const std::string& symbol, int64_t quantity) const {
+        return static_cast<double>(quantity)
+             * get_contract_size(symbol)
+             * get_spot_price(symbol)
+             * get_fx_rate(symbol);
+    }
+
+    // Computed delta exposure: quantity * delta * contract_size * underlyer_spot * fx_rate
+    double compute_delta_exposure(const std::string& symbol, int64_t quantity) const {
+        return static_cast<double>(quantity)
+             * get_delta(symbol)
+             * get_contract_size(symbol)
+             * get_underlyer_spot(symbol)
+             * get_fx_rate(symbol);
+    }
+};
+
+// ============================================================================
+// StaticInstrumentProvider - Simple implementation with pre-loaded data
+// ============================================================================
+//
+// Useful for testing and scenarios where instrument data doesn't change
+// during the session.
+//
+
+struct InstrumentData {
+    double spot_price = 0.0;
+    double fx_rate = 1.0;           // 1.0 for USD
+    double contract_size = 1.0;     // 1.0 for equities
+    std::string underlyer;
+    double underlyer_spot = 0.0;    // Same as spot for equities
+    double delta = 1.0;             // 1.0 for equities/futures
+};
+
+class StaticInstrumentProvider : public InstrumentProvider {
+private:
+    std::unordered_map<std::string, InstrumentData> instruments_;
+    InstrumentData default_data_;
+
+public:
+    StaticInstrumentProvider() = default;
+
+    // Add or update instrument data
+    void add_instrument(const std::string& symbol, const InstrumentData& data) {
+        instruments_[symbol] = data;
+    }
+
+    // Add equity (simple case: contract_size=1, fx_rate=1, delta=1)
+    void add_equity(const std::string& symbol, double spot_price) {
+        InstrumentData data;
+        data.spot_price = spot_price;
+        data.fx_rate = 1.0;
+        data.contract_size = 1.0;
+        data.underlyer = symbol;
+        data.underlyer_spot = spot_price;
+        data.delta = 1.0;
+        instruments_[symbol] = data;
+    }
+
+    // Add option
+    void add_option(const std::string& symbol,
+                   const std::string& underlyer,
+                   double spot_price,
+                   double underlyer_spot,
+                   double delta,
+                   double contract_size = 100.0,
+                   double fx_rate = 1.0) {
+        InstrumentData data;
+        data.spot_price = spot_price;
+        data.fx_rate = fx_rate;
+        data.contract_size = contract_size;
+        data.underlyer = underlyer;
+        data.underlyer_spot = underlyer_spot;
+        data.delta = delta;
+        instruments_[symbol] = data;
+    }
+
+    // Add future
+    void add_future(const std::string& symbol,
+                   const std::string& underlyer,
+                   double spot_price,
+                   double underlyer_spot,
+                   double contract_size = 1.0,
+                   double fx_rate = 1.0) {
+        InstrumentData data;
+        data.spot_price = spot_price;
+        data.fx_rate = fx_rate;
+        data.contract_size = contract_size;
+        data.underlyer = underlyer;
+        data.underlyer_spot = underlyer_spot;
+        data.delta = 1.0;  // Futures have delta of 1
+        instruments_[symbol] = data;
+    }
+
+    // Set default data for unknown instruments
+    void set_default(const InstrumentData& data) {
+        default_data_ = data;
+    }
+
+    // Update spot price for an instrument
+    void update_spot_price(const std::string& symbol, double new_spot) {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            it->second.spot_price = new_spot;
+        }
+    }
+
+    // Update underlyer spot for all options on that underlyer
+    void update_underlyer_spot(const std::string& underlyer, double new_spot) {
+        for (auto& [symbol, data] : instruments_) {
+            if (data.underlyer == underlyer) {
+                data.underlyer_spot = new_spot;
+                // Also update spot for the underlyer itself
+                if (symbol == underlyer) {
+                    data.spot_price = new_spot;
+                }
+            }
+        }
+    }
+
+    // Update delta for an option
+    void update_delta(const std::string& symbol, double new_delta) {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            it->second.delta = new_delta;
+        }
+    }
+
+    // Check if instrument exists
+    bool has_instrument(const std::string& symbol) const {
+        return instruments_.find(symbol) != instruments_.end();
+    }
+
+    // Clear all instruments
+    void clear() {
+        instruments_.clear();
+    }
+
+    // InstrumentProvider interface implementation
+    double get_spot_price(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.spot_price;
+        }
+        return default_data_.spot_price;
+    }
+
+    double get_fx_rate(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.fx_rate;
+        }
+        return default_data_.fx_rate;
+    }
+
+    double get_contract_size(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.contract_size;
+        }
+        return default_data_.contract_size;
+    }
+
+    std::string get_underlyer(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.underlyer;
+        }
+        return symbol;  // Default: symbol is its own underlyer
+    }
+
+    double get_underlyer_spot(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.underlyer_spot;
+        }
+        return default_data_.underlyer_spot;
+    }
+
+    double get_delta(const std::string& symbol) const override {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.delta;
+        }
+        return default_data_.delta;
+    }
+};
+
+} // namespace instrument

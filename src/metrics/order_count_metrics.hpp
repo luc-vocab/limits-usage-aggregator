@@ -2,6 +2,7 @@
 
 #include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
+#include "../instrument/instrument.hpp"
 #include <unordered_set>
 
 // Forward declarations
@@ -42,6 +43,14 @@ private:
 
 public:
     // ========================================================================
+    // InstrumentProvider interface (for consistency, not used by OrderCount)
+    // ========================================================================
+
+    void set_instrument_provider(instrument::InstrumentProvider* /*provider*/) {
+        // OrderCountMetrics doesn't need InstrumentProvider
+    }
+
+    // ========================================================================
     // Generic metric interface (used by template RiskAggregationEngine)
     // ========================================================================
 
@@ -52,14 +61,12 @@ public:
     void on_order_removed(const engine::TrackedOrder& order);
 
     // Called when order is modified (update ack) - no-op for order count
-    void on_order_updated(const engine::TrackedOrder& /*order*/,
-                          double /*old_delta_exposure*/, double /*old_notional*/) {
+    void on_order_updated(const engine::TrackedOrder& /*order*/, int64_t /*old_qty*/) {
         // Order count doesn't change on update
     }
 
     // Called on partial fill - no-op for order count
-    void on_partial_fill(const engine::TrackedOrder& /*order*/,
-                         double /*filled_delta_exposure*/, double /*filled_notional*/) {
+    void on_partial_fill(const engine::TrackedOrder& /*order*/, int64_t /*filled_qty*/) {
         // Order count doesn't change on partial fill
     }
 

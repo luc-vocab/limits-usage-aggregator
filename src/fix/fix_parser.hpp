@@ -115,6 +115,15 @@ inline int parse_int(const std::string& value) {
     }
 }
 
+// Parse int64_t from string
+inline int64_t parse_int64(const std::string& value) {
+    try {
+        return std::stoll(value);
+    } catch (const std::exception&) {
+        throw ParseError("Invalid int64: " + value);
+    }
+}
+
 // ============================================================================
 // Message Parsers
 // ============================================================================
@@ -124,7 +133,7 @@ inline NewOrderSingle parse_new_order_single(const std::unordered_map<int, std::
     msg.key.cl_ord_id = get_required(fields, tags::CL_ORD_ID, "ClOrdID");
     msg.symbol = get_required(fields, tags::SYMBOL, "Symbol");
     msg.side = parse_side(get_required(fields, tags::SIDE, "Side"));
-    msg.quantity = parse_double(get_required(fields, tags::ORDER_QTY, "OrderQty"));
+    msg.quantity = parse_int64(get_required(fields, tags::ORDER_QTY, "OrderQty"));
     msg.price = parse_double(get_required(fields, tags::PRICE, "Price"));
 
     // Optional fields
@@ -135,7 +144,7 @@ inline NewOrderSingle parse_new_order_single(const std::unordered_map<int, std::
     // In production, these would be defined in a custom FIX dictionary
     msg.strategy_id = get_optional(fields, 7001).value_or("");
     msg.portfolio_id = get_optional(fields, 7002).value_or("");
-    msg.delta = parse_double(get_optional(fields, 7003).value_or("1.0"));
+    // Note: delta is now obtained from InstrumentProvider, not parsed from order
 
     return msg;
 }
@@ -146,7 +155,7 @@ inline OrderCancelReplaceRequest parse_order_cancel_replace(const std::unordered
     msg.orig_key.cl_ord_id = get_required(fields, tags::ORIG_CL_ORD_ID, "OrigClOrdID");
     msg.symbol = get_required(fields, tags::SYMBOL, "Symbol");
     msg.side = parse_side(get_required(fields, tags::SIDE, "Side"));
-    msg.quantity = parse_double(get_required(fields, tags::ORDER_QTY, "OrderQty"));
+    msg.quantity = parse_int64(get_required(fields, tags::ORDER_QTY, "OrderQty"));
     msg.price = parse_double(get_required(fields, tags::PRICE, "Price"));
     return msg;
 }
@@ -178,9 +187,9 @@ inline ExecutionReport parse_execution_report(const std::unordered_map<int, std:
     msg.symbol = get_optional(fields, tags::SYMBOL).value_or("");
 
     // Quantities
-    msg.leaves_qty = parse_double(get_optional(fields, tags::LEAVES_QTY).value_or("0"));
-    msg.cum_qty = parse_double(get_optional(fields, tags::CUM_QTY).value_or("0"));
-    msg.last_qty = parse_double(get_optional(fields, tags::LAST_QTY).value_or("0"));
+    msg.leaves_qty = parse_int64(get_optional(fields, tags::LEAVES_QTY).value_or("0"));
+    msg.cum_qty = parse_int64(get_optional(fields, tags::CUM_QTY).value_or("0"));
+    msg.last_qty = parse_int64(get_optional(fields, tags::LAST_QTY).value_or("0"));
     msg.last_px = parse_double(get_optional(fields, tags::LAST_PX).value_or("0"));
 
     msg.text = get_optional(fields, tags::TEXT);
@@ -229,9 +238,7 @@ inline std::string serialize_new_order_single(const NewOrderSingle& msg) {
     if (!msg.portfolio_id.empty()) {
         oss << 7002 << "=" << msg.portfolio_id << FIX_DELIMITER;
     }
-    if (msg.delta != 1.0) {
-        oss << 7003 << "=" << msg.delta << FIX_DELIMITER;
-    }
+    // Note: delta is now obtained from InstrumentProvider, not serialized
 
     return oss.str();
 }

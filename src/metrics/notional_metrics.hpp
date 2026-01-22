@@ -2,6 +2,9 @@
 
 #include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
+#include "../instrument/instrument.hpp"
+#include <unordered_map>
+#include <set>
 
 // Forward declarations
 namespace engine {
@@ -15,7 +18,10 @@ namespace metrics {
 // Notional Metrics - Tracks open order notional by strategy/portfolio
 // ============================================================================
 //
-// Uses MultiGroupAggregator to automatically aggregate notional values at:
+// Uses quantity-based tracking with lazy notional computation via InstrumentProvider.
+// Notional is computed as: quantity * contract_size * spot_price * fx_rate
+//
+// Tracks quantities at:
 // - Global level (system-wide totals)
 // - Per-strategy level (if strategy_id is non-empty)
 // - Per-portfolio level (if portfolio_id is non-empty)
@@ -23,14 +29,38 @@ namespace metrics {
 
 class NotionalMetrics {
 private:
-    aggregation::MultiGroupAggregator<
-        aggregation::SumCombiner<double>,
-        aggregation::GlobalKey,
-        aggregation::StrategyKey,
-        aggregation::PortfolioKey
-    > aggregator_;
+    instrument::InstrumentProvider* provider_ = nullptr;
+
+    // Track quantities per instrument
+    // Key: symbol, Value: quantity
+    std::unordered_map<std::string, int64_t> instrument_quantities_;
+
+    // Track which instruments belong to which strategy/portfolio
+    std::unordered_map<std::string, std::set<std::string>> strategy_instruments_;
+    std::unordered_map<std::string, std::set<std::string>> portfolio_instruments_;
+
+    // Global quantity total
+    int64_t global_qty_ = 0;
+
+    // Compute notional for a single instrument
+    double compute_instrument_notional(const std::string& symbol, int64_t quantity) const {
+        if (!provider_) {
+            return 0.0;
+        }
+        return provider_->compute_notional(symbol, quantity);
+    }
 
 public:
+    NotionalMetrics() = default;
+
+    void set_instrument_provider(instrument::InstrumentProvider* provider) {
+        provider_ = provider;
+    }
+
+    instrument::InstrumentProvider* instrument_provider() const {
+        return provider_;
+    }
+
     // ========================================================================
     // Generic metric interface (used by template RiskAggregationEngine)
     // ========================================================================
@@ -42,75 +72,153 @@ public:
     void on_order_removed(const engine::TrackedOrder& order);
 
     // Called when order is modified (update ack)
-    void on_order_updated(const engine::TrackedOrder& order,
-                          double old_delta_exposure, double old_notional);
+    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty);
 
     // Called on partial fill
-    void on_partial_fill(const engine::TrackedOrder& order,
-                         double filled_delta_exposure, double filled_notional);
+    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty);
 
     // ========================================================================
     // Legacy interface (for backward compatibility and direct usage)
     // ========================================================================
 
-    void add_order(const std::string& strategy_id, const std::string& portfolio_id, double notional) {
-        aggregator_.bucket<aggregation::GlobalKey>().add(aggregation::GlobalKey::instance(), notional);
+    void add_order(const std::string& symbol, const std::string& strategy_id,
+                   const std::string& portfolio_id, int64_t quantity) {
+        instrument_quantities_[symbol] += quantity;
+        global_qty_ += quantity;
 
+        // Track strategy/portfolio mappings
         if (!strategy_id.empty()) {
-            aggregator_.bucket<aggregation::StrategyKey>().add(aggregation::StrategyKey{strategy_id}, notional);
+            strategy_instruments_[strategy_id].insert(symbol);
         }
         if (!portfolio_id.empty()) {
-            aggregator_.bucket<aggregation::PortfolioKey>().add(aggregation::PortfolioKey{portfolio_id}, notional);
+            portfolio_instruments_[portfolio_id].insert(symbol);
         }
     }
 
-    void remove_order(const std::string& strategy_id, const std::string& portfolio_id, double notional) {
-        aggregator_.bucket<aggregation::GlobalKey>().remove(aggregation::GlobalKey::instance(), notional);
-
-        if (!strategy_id.empty()) {
-            aggregator_.bucket<aggregation::StrategyKey>().remove(aggregation::StrategyKey{strategy_id}, notional);
-        }
-        if (!portfolio_id.empty()) {
-            aggregator_.bucket<aggregation::PortfolioKey>().remove(aggregation::PortfolioKey{portfolio_id}, notional);
+    void remove_order(const std::string& symbol, const std::string& strategy_id,
+                      const std::string& portfolio_id, int64_t quantity) {
+        auto it = instrument_quantities_.find(symbol);
+        if (it != instrument_quantities_.end()) {
+            it->second -= quantity;
+            global_qty_ -= quantity;
+            if (it->second <= 0) {
+                instrument_quantities_.erase(it);
+                cleanup_mappings(symbol, strategy_id, portfolio_id);
+            }
         }
     }
 
-    void update_order(const std::string& strategy_id, const std::string& portfolio_id,
-                      double old_notional, double new_notional) {
-        remove_order(strategy_id, portfolio_id, old_notional);
-        add_order(strategy_id, portfolio_id, new_notional);
+    void update_order(const std::string& symbol, const std::string& strategy_id,
+                      const std::string& portfolio_id, int64_t old_qty, int64_t new_qty) {
+        remove_order(symbol, strategy_id, portfolio_id, old_qty);
+        add_order(symbol, strategy_id, portfolio_id, new_qty);
     }
 
-    void partial_fill(const std::string& strategy_id, const std::string& portfolio_id, double filled_notional) {
-        remove_order(strategy_id, portfolio_id, filled_notional);
+    void partial_fill(const std::string& symbol, const std::string& strategy_id,
+                      const std::string& portfolio_id, int64_t filled_qty) {
+        remove_order(symbol, strategy_id, portfolio_id, filled_qty);
     }
 
     // ========================================================================
-    // Accessors
+    // Accessors - compute notional values lazily using InstrumentProvider
     // ========================================================================
 
+    // Quantity accessors
+    int64_t global_quantity() const { return global_qty_; }
+
+    int64_t instrument_quantity(const std::string& symbol) const {
+        auto it = instrument_quantities_.find(symbol);
+        return it != instrument_quantities_.end() ? it->second : 0;
+    }
+
+    // Notional accessors (computed lazily)
     double global_notional() const {
-        return aggregator_.get(aggregation::GlobalKey::instance());
+        double total = 0.0;
+        for (const auto& [symbol, qty] : instrument_quantities_) {
+            total += compute_instrument_notional(symbol, qty);
+        }
+        return total;
     }
 
     double strategy_notional(const std::string& strategy_id) const {
-        return aggregator_.get(aggregation::StrategyKey{strategy_id});
+        auto it = strategy_instruments_.find(strategy_id);
+        if (it == strategy_instruments_.end()) {
+            return 0.0;
+        }
+
+        double total = 0.0;
+        for (const auto& symbol : it->second) {
+            auto qty_it = instrument_quantities_.find(symbol);
+            if (qty_it != instrument_quantities_.end()) {
+                total += compute_instrument_notional(symbol, qty_it->second);
+            }
+        }
+        return total;
     }
 
     double portfolio_notional(const std::string& portfolio_id) const {
-        return aggregator_.get(aggregation::PortfolioKey{portfolio_id});
+        auto it = portfolio_instruments_.find(portfolio_id);
+        if (it == portfolio_instruments_.end()) {
+            return 0.0;
+        }
+
+        double total = 0.0;
+        for (const auto& symbol : it->second) {
+            auto qty_it = instrument_quantities_.find(symbol);
+            if (qty_it != instrument_quantities_.end()) {
+                total += compute_instrument_notional(symbol, qty_it->second);
+            }
+        }
+        return total;
     }
 
     std::vector<aggregation::StrategyKey> strategies() const {
-        return aggregator_.keys<aggregation::StrategyKey>();
+        std::vector<aggregation::StrategyKey> result;
+        for (const auto& [strategy_id, _] : strategy_instruments_) {
+            result.push_back(aggregation::StrategyKey{strategy_id});
+        }
+        return result;
     }
 
     std::vector<aggregation::PortfolioKey> portfolios() const {
-        return aggregator_.keys<aggregation::PortfolioKey>();
+        std::vector<aggregation::PortfolioKey> result;
+        for (const auto& [portfolio_id, _] : portfolio_instruments_) {
+            result.push_back(aggregation::PortfolioKey{portfolio_id});
+        }
+        return result;
     }
 
     void clear() {
-        aggregator_.clear();
+        instrument_quantities_.clear();
+        strategy_instruments_.clear();
+        portfolio_instruments_.clear();
+        global_qty_ = 0;
+    }
+
+private:
+    void cleanup_mappings(const std::string& symbol, const std::string& strategy_id,
+                          const std::string& portfolio_id) {
+        // Clean up strategy mapping
+        if (!strategy_id.empty()) {
+            auto it = strategy_instruments_.find(strategy_id);
+            if (it != strategy_instruments_.end()) {
+                it->second.erase(symbol);
+                if (it->second.empty()) {
+                    strategy_instruments_.erase(it);
+                }
+            }
+        }
+
+        // Clean up portfolio mapping
+        if (!portfolio_id.empty()) {
+            auto it = portfolio_instruments_.find(portfolio_id);
+            if (it != portfolio_instruments_.end()) {
+                it->second.erase(symbol);
+                if (it->second.empty()) {
+                    portfolio_instruments_.erase(it);
+                }
+            }
+        }
     }
 };
 
@@ -122,21 +230,19 @@ public:
 namespace metrics {
 
 inline void NotionalMetrics::on_order_added(const engine::TrackedOrder& order) {
-    aggregator_.add(order, order.notional());
+    add_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
 inline void NotionalMetrics::on_order_removed(const engine::TrackedOrder& order) {
-    aggregator_.remove(order, order.notional());
+    remove_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-inline void NotionalMetrics::on_order_updated(const engine::TrackedOrder& order,
-                                               double /*old_delta_exposure*/, double old_notional) {
-    aggregator_.update(order, old_notional, order.notional());
+inline void NotionalMetrics::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    update_order(order.symbol, order.strategy_id, order.portfolio_id, old_qty, order.leaves_qty);
 }
 
-inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order,
-                                              double /*filled_delta_exposure*/, double filled_notional) {
-    aggregator_.remove(order, filled_notional);
+inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    partial_fill(order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
 }
 
 } // namespace metrics
@@ -171,6 +277,11 @@ public:
 
     double portfolio_notional(const std::string& portfolio_id) const {
         return notional_metrics_().portfolio_notional(portfolio_id);
+    }
+
+    // Quantity accessor
+    int64_t global_quantity() const {
+        return notional_metrics_().global_quantity();
     }
 };
 

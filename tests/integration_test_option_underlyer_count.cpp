@@ -58,11 +58,10 @@ struct OrderStep {
     std::string underlyer;       // Underlyer symbol
     Side side = Side::BID;       // BID or ASK
     double price = 0.0;          // Order price
-    double quantity = 0.0;       // Order quantity
-    double delta = 1.0;          // Delta per contract
-    double fill_qty = 0.0;       // For fills: quantity filled
+    int64_t quantity = 0;        // Order quantity
+    int64_t fill_qty = 0;        // For fills: quantity filled
     double new_price = 0.0;      // For replace: new price
-    double new_quantity = 0.0;   // For replace: new quantity
+    int64_t new_quantity = 0;    // For replace: new quantity
     bool expect_limit_breach = false;  // Whether this step should trigger a limit breach
 
     // Builder pattern for fluent API
@@ -70,11 +69,10 @@ struct OrderStep {
     OrderStep& with_underlyer(const std::string& u) { underlyer = u; return *this; }
     OrderStep& with_side(Side s) { side = s; return *this; }
     OrderStep& with_price(double p) { price = p; return *this; }
-    OrderStep& with_quantity(double q) { quantity = q; return *this; }
-    OrderStep& with_delta(double d) { delta = d; return *this; }
-    OrderStep& with_fill_qty(double fq) { fill_qty = fq; return *this; }
+    OrderStep& with_quantity(int64_t q) { quantity = q; return *this; }
+    OrderStep& with_fill_qty(int64_t fq) { fill_qty = fq; return *this; }
     OrderStep& with_new_price(double np) { new_price = np; return *this; }
-    OrderStep& with_new_quantity(double nq) { new_quantity = nq; return *this; }
+    OrderStep& with_new_quantity(int64_t nq) { new_quantity = nq; return *this; }
     OrderStep& expect_breach() { expect_limit_breach = true; return *this; }
 };
 
@@ -207,7 +205,6 @@ public:
                 order.side = step.side;
                 order.price = step.price;
                 order.quantity = step.quantity;
-                order.delta = step.delta;
                 order.strategy_id = "STRAT1";
                 order.portfolio_id = "PORT1";
 
@@ -390,7 +387,7 @@ public:
                     }
                 }
 
-                double new_qty = step.new_quantity > 0 ? step.new_quantity : it->second.quantity;
+                int64_t new_qty = step.new_quantity > 0 ? step.new_quantity : it->second.quantity;
                 double new_price = step.new_price > 0 ? step.new_price : it->second.price;
 
                 ExecutionReport report;
@@ -457,7 +454,7 @@ public:
                     return result;
                 }
 
-                double fill_qty = step.fill_qty > 0 ? step.fill_qty : it->second.quantity / 2;
+                int64_t fill_qty = step.fill_qty > 0 ? step.fill_qty : it->second.quantity / 2;
 
                 ExecutionReport report;
                 report.key.cl_ord_id = step.order_id;
@@ -486,7 +483,7 @@ public:
                     return result;
                 }
 
-                double fill_qty = step.fill_qty > 0 ? step.fill_qty : it->second.quantity;
+                int64_t fill_qty = step.fill_qty > 0 ? step.fill_qty : it->second.quantity;
 
                 ExecutionReport report;
                 report.key.cl_ord_id = step.order_id;

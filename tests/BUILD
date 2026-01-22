@@ -13,6 +13,7 @@ cc_test(
         "//src/aggregation:multi_group",
         "//src/engine",
         "//src/fix",
+        "//src/instrument",
         "//src/metrics",
         "@googletest//:gtest_main",
     ],
