@@ -138,7 +138,7 @@ protected:
     StaticInstrumentProvider provider;
     TestEngine engine;
 
-    // Default limits
+    // Default limits (applied globally to all underlyers)
     static constexpr double MAX_GROSS_DELTA = 100000.0;
     static constexpr double MAX_NET_DELTA = 50000.0;
     static constexpr double MAX_GROSS_VEGA = 50000.0;
@@ -148,23 +148,11 @@ protected:
         provider = create_vega_delta_provider();
         engine.set_instrument_provider(&provider);
 
-        // Set limits for AAPL underlyer
-        engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"AAPL"}, MAX_GROSS_DELTA);
-        engine.set_limit<UnderlyerNetDelta>(UnderlyerKey{"AAPL"}, MAX_NET_DELTA);
-        engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"AAPL"}, MAX_GROSS_VEGA);
-        engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"AAPL"}, MAX_NET_VEGA);
-
-        // Set limits for MSFT underlyer
-        engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"MSFT"}, MAX_GROSS_DELTA);
-        engine.set_limit<UnderlyerNetDelta>(UnderlyerKey{"MSFT"}, MAX_NET_DELTA);
-        engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"MSFT"}, MAX_GROSS_VEGA);
-        engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"MSFT"}, MAX_NET_VEGA);
-
-        // Set limits for 0700.HK underlyer (HKD-denominated)
-        engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"0700.HK"}, MAX_GROSS_DELTA);
-        engine.set_limit<UnderlyerNetDelta>(UnderlyerKey{"0700.HK"}, MAX_NET_DELTA);
-        engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"0700.HK"}, MAX_GROSS_VEGA);
-        engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"0700.HK"}, MAX_NET_VEGA);
+        // Set global default limits for all underlyers
+        engine.set_default_limit<UnderlyerGrossDelta>(MAX_GROSS_DELTA);
+        engine.set_default_limit<UnderlyerNetDelta>(MAX_NET_DELTA);
+        engine.set_default_limit<UnderlyerGrossVega>(MAX_GROSS_VEGA);
+        engine.set_default_limit<UnderlyerNetVega>(MAX_NET_VEGA);
     }
 
     // Accessors
@@ -1098,4 +1086,100 @@ TEST_F(VegaDeltaUniformLimitsTest, VerifyUniformLimitValuesApplied) {
     EXPECT_DOUBLE_EQ(aapl_breach->limit_value, UNIFORM_GROSS_DELTA);
     EXPECT_DOUBLE_EQ(msft_breach->limit_value, UNIFORM_GROSS_DELTA);
     EXPECT_DOUBLE_EQ(hk_breach->limit_value, UNIFORM_GROSS_DELTA);
+}
+
+// ============================================================================
+// Test: Per-underlyer limit override takes priority over uniform limits
+// ============================================================================
+
+TEST_F(VegaDeltaUniformLimitsTest, PerUnderlyerLimitOverrideTakesPriority) {
+    // Starting with uniform limits:
+    //   UNIFORM_GROSS_DELTA = 50,000 for all underlyers
+    //
+    // Override MSFT to have a higher limit
+    constexpr double MSFT_CUSTOM_GROSS_DELTA = 100000.0;
+    engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"MSFT"}, MSFT_CUSTOM_GROSS_DELTA);
+
+    // Override 0700.HK to have a lower limit
+    constexpr double HK_CUSTOM_GROSS_DELTA = 20000.0;
+    engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"0700.HK"}, HK_CUSTOM_GROSS_DELTA);
+
+    // AAPL keeps uniform limit of 50,000
+    // Test: qty=7 -> 52,500 delta, should breach 50,000 limit
+    auto aapl_order = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 7);
+    auto aapl_result = engine.pre_trade_check(aapl_order);
+    EXPECT_TRUE(aapl_result.has_breach(LimitType::GROSS_DELTA))
+        << "AAPL should breach uniform 50,000 limit";
+    const auto* aapl_breach = aapl_result.get_breach(LimitType::GROSS_DELTA);
+    ASSERT_NE(aapl_breach, nullptr);
+    EXPECT_DOUBLE_EQ(aapl_breach->limit_value, UNIFORM_GROSS_DELTA)
+        << "AAPL should use uniform limit";
+
+    // MSFT has custom higher limit of 100,000
+    // Test: qty=5 -> 90,000 delta, should pass (under 100,000)
+    auto msft_order = create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 5);
+    auto msft_result = engine.pre_trade_check(msft_order);
+    EXPECT_FALSE(msft_result.has_breach(LimitType::GROSS_DELTA))
+        << "MSFT 90,000 should pass custom 100,000 limit";
+
+    // MSFT: qty=6 -> 108,000 delta, should breach custom 100,000 limit
+    auto msft_over = create_order("ORD003", "MSFT_C300", "MSFT", Side::BID, 8.0, 6);
+    auto msft_over_result = engine.pre_trade_check(msft_over);
+    EXPECT_TRUE(msft_over_result.has_breach(LimitType::GROSS_DELTA))
+        << "MSFT 108,000 should breach custom 100,000 limit";
+    const auto* msft_breach = msft_over_result.get_breach(LimitType::GROSS_DELTA);
+    ASSERT_NE(msft_breach, nullptr);
+    EXPECT_DOUBLE_EQ(msft_breach->limit_value, MSFT_CUSTOM_GROSS_DELTA)
+        << "MSFT should use custom limit, not uniform";
+
+    // 0700.HK has custom lower limit of 20,000
+    // Test: qty=8 -> 19,712 delta, should pass (under 20,000)
+    // 8 * 0.55 * 100 * 350 * 0.128 = 19,712
+    auto hk_order = create_order("ORD004", "0700_C350", "0700.HK", Side::BID, 25.0, 8);
+    auto hk_result = engine.pre_trade_check(hk_order);
+    EXPECT_FALSE(hk_result.has_breach(LimitType::GROSS_DELTA))
+        << "0700.HK 19,712 should pass custom 20,000 limit";
+
+    // 0700.HK: qty=9 -> 22,176 delta, should breach custom 20,000 limit
+    // 9 * 0.55 * 100 * 350 * 0.128 = 22,176
+    auto hk_over = create_order("ORD005", "0700_C350", "0700.HK", Side::BID, 25.0, 9);
+    auto hk_over_result = engine.pre_trade_check(hk_over);
+    EXPECT_TRUE(hk_over_result.has_breach(LimitType::GROSS_DELTA))
+        << "0700.HK 22,176 should breach custom 20,000 limit";
+    const auto* hk_breach = hk_over_result.get_breach(LimitType::GROSS_DELTA);
+    ASSERT_NE(hk_breach, nullptr);
+    EXPECT_DOUBLE_EQ(hk_breach->limit_value, HK_CUSTOM_GROSS_DELTA)
+        << "0700.HK should use custom limit, not uniform";
+
+    // Verify the three underlyers have different effective limits
+    EXPECT_NE(aapl_breach->limit_value, msft_breach->limit_value);
+    EXPECT_NE(aapl_breach->limit_value, hk_breach->limit_value);
+    EXPECT_NE(msft_breach->limit_value, hk_breach->limit_value);
+}
+
+// ============================================================================
+// Test: Limit override applies to all metric types independently
+// ============================================================================
+
+TEST_F(VegaDeltaUniformLimitsTest, LimitOverrideAppliesToAllMetricTypesIndependently) {
+    // Override only gross delta for AAPL, keep other metrics at uniform limits
+    constexpr double AAPL_CUSTOM_GROSS_DELTA = 80000.0;
+    engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"AAPL"}, AAPL_CUSTOM_GROSS_DELTA);
+
+    // AAPL_C150 qty=10: delta=75,000, vega=37,500
+    auto order = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto result = engine.pre_trade_check(order);
+
+    // Gross delta: 75,000 < 80,000 custom limit -> PASS
+    EXPECT_FALSE(result.has_breach(LimitType::GROSS_DELTA))
+        << "Gross delta 75,000 should pass custom 80,000 limit";
+
+    // Gross vega: 37,500 > 25,000 uniform limit -> BREACH
+    EXPECT_TRUE(result.has_breach(LimitType::GROSS_VEGA))
+        << "Gross vega 37,500 should breach uniform 25,000 limit";
+
+    const auto* vega_breach = result.get_breach(LimitType::GROSS_VEGA);
+    ASSERT_NE(vega_breach, nullptr);
+    EXPECT_DOUBLE_EQ(vega_breach->limit_value, UNIFORM_GROSS_VEGA)
+        << "Vega limit should still be uniform (not affected by delta override)";
 }
