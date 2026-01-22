@@ -123,6 +123,16 @@ public:
     }
 
     // ========================================================================
+    // Position management
+    // ========================================================================
+
+    // Set position for a specific instrument across all metrics that support it
+    // Signed quantity: positive = long, negative = short
+    void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
+        engine_.set_instrument_position(symbol, signed_quantity);
+    }
+
+    // ========================================================================
     // Metric access (forwarded from underlying engine via CRTP mixins)
     // ========================================================================
 

@@ -263,6 +263,655 @@ using StrategyNotionalMetric = NotionalMetric<aggregation::StrategyKey, Provider
 template<typename Provider, typename... Stages>
 using PortfolioNotionalMetric = NotionalMetric<aggregation::PortfolioKey, Provider, Stages...>;
 
+// ============================================================================
+// GrossNotionalMetric - Single-value metric tracking absolute notional
+// ============================================================================
+//
+// Tracks only gross (absolute) notional. Designed for use with the
+// generic limit checking system where each metric has one value type.
+// BID and ASK both add positive values (sum of |notional|).
+//
+
+template<typename Key, typename Provider, typename... Stages>
+class GrossNotionalMetric {
+    static_assert(instrument::is_notional_provider_v<Provider>,
+                  "Provider must satisfy notional provider requirements (spot, fx, contract_size)");
+
+public:
+    using key_type = Key;
+    using value_type = double;
+    using provider_type = Provider;
+    using Config = aggregation::StageConfig<Stages...>;
+
+    // ========================================================================
+    // Static methods for pre-trade limit checking
+    // ========================================================================
+
+    // Compute the gross notional contribution for a new order
+    static double compute_order_contribution(
+        const fix::NewOrderSingle& order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        return std::abs(instrument::compute_notional(*provider, order.symbol, order.quantity));
+    }
+
+    // Compute the gross notional contribution for an order update (new - old)
+    static double compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& update,
+        const engine::TrackedOrder& existing_order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double old_notional = std::abs(instrument::compute_notional(
+            *provider, existing_order.symbol, existing_order.leaves_qty));
+        double new_notional = std::abs(instrument::compute_notional(
+            *provider, update.symbol, update.quantity));
+        return new_notional - old_notional;
+    }
+
+    // Extract the key from a NewOrderSingle
+    static Key extract_key(const fix::NewOrderSingle& order) {
+        if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return aggregation::GlobalKey::instance();
+        } else if constexpr (std::is_same_v<Key, aggregation::UnderlyerKey>) {
+            return Key{order.underlyer};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentKey>) {
+            return Key{order.symbol};
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return Key{order.strategy_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return Key{order.portfolio_id};
+        } else {
+            static_assert(sizeof(Key) == 0, "Unsupported key type for GrossNotionalMetric");
+        }
+    }
+
+    // Get the limit type for this metric
+    static constexpr engine::LimitType limit_type() {
+        return engine::LimitType::GLOBAL_GROSS_NOTIONAL;
+    }
+
+private:
+    struct StageData {
+        aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> gross_notional;
+        // Track quantities per instrument for position recomputation
+        std::unordered_map<std::string, int64_t> instrument_quantities;
+
+        void clear() {
+            gross_notional.clear();
+            instrument_quantities.clear();
+        }
+    };
+
+    using Storage = aggregation::StagedMetric<StageData, Stages...>;
+
+    const Provider* provider_ = nullptr;
+    Storage storage_;
+
+    double compute_gross(const engine::TrackedOrder& order) const {
+        if (!provider_) return 0.0;
+        return std::abs(instrument::compute_notional(*provider_, order.symbol, order.leaves_qty));
+    }
+
+    double compute_gross(const std::string& symbol, int64_t quantity) const {
+        if (!provider_) return 0.0;
+        return std::abs(instrument::compute_notional(*provider_, symbol, quantity));
+    }
+
+    Key extract_order_key(const engine::TrackedOrder& order) const {
+        return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+public:
+    GrossNotionalMetric() = default;
+
+    void set_instrument_provider(const Provider* provider) {
+        provider_ = provider;
+    }
+
+    const Provider* instrument_provider() const {
+        return provider_;
+    }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
+
+    double get(const Key& key) const {
+        double total = 0.0;
+        storage_.for_each_stage([&key, &total](aggregation::OrderStage /*stage*/, const StageData& data) {
+            total += data.gross_notional.get(key);
+        });
+        return total;
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_open && std::is_void_v<Dummy>, double>
+    get_open(const Key& key) const {
+        return storage_.open().gross_notional.get(key);
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_in_flight && std::is_void_v<Dummy>, double>
+    get_in_flight(const Key& key) const {
+        return storage_.in_flight().gross_notional.get(key);
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, double>
+    get_position(const Key& key) const {
+        return storage_.position().gross_notional.get(key);
+    }
+
+    // ========================================================================
+    // Direct position manipulation (for testing/initialization)
+    // ========================================================================
+
+    // Set position for a specific instrument by quantity
+    // Computes notional from instrument data: |qty * contract_size * spot_price * fx_rate|
+    // Signed quantity is accepted (for engine-level interface compatibility) but absolute value is used
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, void>
+    set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
+        if (!provider_) return;
+
+        Key key = aggregation::GlobalKey::instance();
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (!pos_data) return;
+
+        // Remove old contribution if exists
+        auto it = pos_data->instrument_quantities.find(symbol);
+        if (it != pos_data->instrument_quantities.end()) {
+            double old_gross = compute_gross(symbol, it->second);
+            pos_data->gross_notional.remove(key, old_gross);
+        }
+
+        // Add new contribution (use absolute value for gross)
+        int64_t abs_quantity = std::abs(signed_quantity);
+        double new_gross = compute_gross(symbol, abs_quantity);
+        pos_data->gross_notional.add(key, new_gross);
+        pos_data->instrument_quantities[symbol] = abs_quantity;
+    }
+
+    // Get the manual position for a specific instrument
+    double get_instrument_position(const std::string& symbol) const {
+        if constexpr (Storage::Config::track_position) {
+            const auto& pos_data = storage_.position();
+            auto it = pos_data.instrument_quantities.find(symbol);
+            if (it != pos_data.instrument_quantities.end()) {
+                return compute_gross(symbol, it->second);
+            }
+        }
+        return 0.0;
+    }
+
+    // Clear manual position for a specific instrument
+    void clear_instrument_position(const std::string& symbol) {
+        if constexpr (Storage::Config::track_position) {
+            Key key = aggregation::GlobalKey::instance();
+            auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+            if (!pos_data) return;
+
+            auto it = pos_data->instrument_quantities.find(symbol);
+            if (it != pos_data->instrument_quantities.end()) {
+                double old_gross = compute_gross(symbol, it->second);
+                pos_data->gross_notional.remove(key, old_gross);
+                pos_data->instrument_quantities.erase(it);
+            }
+        }
+    }
+
+    // ========================================================================
+    // Generic metric interface
+    // ========================================================================
+
+    void on_order_added(const engine::TrackedOrder& order) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double gross = compute_gross(order);
+        auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
+        if (stage_data) {
+            stage_data->gross_notional.add(key, gross);
+        }
+    }
+
+    void on_order_removed(const engine::TrackedOrder& order) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double gross = compute_gross(order);
+        auto stage = aggregation::stage_from_order_state(order.state);
+        auto* stage_data = storage_.get_stage(stage);
+        if (stage_data) {
+            stage_data->gross_notional.remove(key, gross);
+        }
+    }
+
+    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double old_gross = compute_gross(order.symbol, old_qty);
+        double new_gross = compute_gross(order);
+        auto stage = aggregation::stage_from_order_state(order.state);
+        auto* stage_data = storage_.get_stage(stage);
+        if (stage_data) {
+            stage_data->gross_notional.remove(key, old_gross);
+            stage_data->gross_notional.add(key, new_gross);
+        }
+    }
+
+    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double filled_gross = compute_gross(order.symbol, filled_qty);
+
+        auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
+        if (open_data) {
+            open_data->gross_notional.remove(key, filled_gross);
+        }
+
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (pos_data) {
+            pos_data->gross_notional.add(key, filled_gross);
+        }
+    }
+
+    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double filled_gross = compute_gross(order.symbol, filled_qty);
+
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (pos_data) {
+            pos_data->gross_notional.add(key, filled_gross);
+        }
+    }
+
+    void on_state_change(const engine::TrackedOrder& order,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        auto old_stage = aggregation::stage_from_order_state(old_state);
+        auto new_stage = aggregation::stage_from_order_state(new_state);
+
+        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
+            Key key = extract_order_key(order);
+            double gross = compute_gross(order);
+
+            auto* old_data = storage_.get_stage(old_stage);
+            auto* new_data = storage_.get_stage(new_stage);
+
+            if (old_data) {
+                old_data->gross_notional.remove(key, gross);
+            }
+            if (new_data) {
+                new_data->gross_notional.add(key, gross);
+            }
+        }
+    }
+
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double old_gross = compute_gross(order.symbol, old_qty);
+        double new_gross = compute_gross(order);
+
+        auto old_stage = aggregation::stage_from_order_state(old_state);
+        auto new_stage = aggregation::stage_from_order_state(new_state);
+
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
+
+        if (old_data) {
+            old_data->gross_notional.remove(key, old_gross);
+        }
+        if (new_data) {
+            new_data->gross_notional.add(key, new_gross);
+        }
+    }
+
+    void clear() {
+        storage_.clear();
+    }
+};
+
+// ============================================================================
+// NetNotionalMetric - Single-value metric tracking signed notional
+// ============================================================================
+//
+// Tracks only net (signed) notional. Designed for use with the
+// generic limit checking system where each metric has one value type.
+// BID = +notional, ASK = -notional
+//
+
+template<typename Key, typename Provider, typename... Stages>
+class NetNotionalMetric {
+    static_assert(instrument::is_notional_provider_v<Provider>,
+                  "Provider must satisfy notional provider requirements (spot, fx, contract_size)");
+
+public:
+    using key_type = Key;
+    using value_type = double;
+    using provider_type = Provider;
+    using Config = aggregation::StageConfig<Stages...>;
+
+    // ========================================================================
+    // Static methods for pre-trade limit checking
+    // ========================================================================
+
+    // Compute the net notional contribution for a new order
+    static double compute_order_contribution(
+        const fix::NewOrderSingle& order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double notional = instrument::compute_notional(*provider, order.symbol, order.quantity);
+        return (order.side == fix::Side::BID) ? notional : -notional;
+    }
+
+    // Compute the net notional contribution for an order update (new - old)
+    static double compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& update,
+        const engine::TrackedOrder& existing_order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double old_notional = instrument::compute_notional(
+            *provider, existing_order.symbol, existing_order.leaves_qty);
+        double old_net = (existing_order.side == fix::Side::BID) ? old_notional : -old_notional;
+
+        double new_notional = instrument::compute_notional(
+            *provider, update.symbol, update.quantity);
+        double new_net = (update.side == fix::Side::BID) ? new_notional : -new_notional;
+
+        return new_net - old_net;
+    }
+
+    // Extract the key from a NewOrderSingle
+    static Key extract_key(const fix::NewOrderSingle& order) {
+        if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return aggregation::GlobalKey::instance();
+        } else if constexpr (std::is_same_v<Key, aggregation::UnderlyerKey>) {
+            return Key{order.underlyer};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentKey>) {
+            return Key{order.symbol};
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return Key{order.strategy_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return Key{order.portfolio_id};
+        } else {
+            static_assert(sizeof(Key) == 0, "Unsupported key type for NetNotionalMetric");
+        }
+    }
+
+    // Get the limit type for this metric
+    static constexpr engine::LimitType limit_type() {
+        return engine::LimitType::GLOBAL_NET_NOTIONAL;
+    }
+
+private:
+    struct StageData {
+        aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> net_notional;
+        // Track signed quantities per instrument for position recomputation
+        std::unordered_map<std::string, int64_t> instrument_quantities;
+
+        void clear() {
+            net_notional.clear();
+            instrument_quantities.clear();
+        }
+    };
+
+    using Storage = aggregation::StagedMetric<StageData, Stages...>;
+
+    const Provider* provider_ = nullptr;
+    Storage storage_;
+
+    double compute_net(const engine::TrackedOrder& order) const {
+        if (!provider_) return 0.0;
+        double notional = instrument::compute_notional(*provider_, order.symbol, order.leaves_qty);
+        return (order.side == fix::Side::BID) ? notional : -notional;
+    }
+
+    double compute_net(const std::string& symbol, int64_t quantity, fix::Side side) const {
+        if (!provider_) return 0.0;
+        double notional = instrument::compute_notional(*provider_, symbol, quantity);
+        return (side == fix::Side::BID) ? notional : -notional;
+    }
+
+    // Compute net notional from signed quantity (positive = long, negative = short)
+    double compute_net_from_signed_qty(const std::string& symbol, int64_t signed_quantity) const {
+        if (!provider_) return 0.0;
+        double notional = instrument::compute_notional(*provider_, symbol, std::abs(signed_quantity));
+        return (signed_quantity >= 0) ? notional : -notional;
+    }
+
+    Key extract_order_key(const engine::TrackedOrder& order) const {
+        return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+public:
+    NetNotionalMetric() = default;
+
+    void set_instrument_provider(const Provider* provider) {
+        provider_ = provider;
+    }
+
+    const Provider* instrument_provider() const {
+        return provider_;
+    }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
+
+    double get(const Key& key) const {
+        double total = 0.0;
+        storage_.for_each_stage([&key, &total](aggregation::OrderStage /*stage*/, const StageData& data) {
+            total += data.net_notional.get(key);
+        });
+        return total;
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_open && std::is_void_v<Dummy>, double>
+    get_open(const Key& key) const {
+        return storage_.open().net_notional.get(key);
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_in_flight && std::is_void_v<Dummy>, double>
+    get_in_flight(const Key& key) const {
+        return storage_.in_flight().net_notional.get(key);
+    }
+
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, double>
+    get_position(const Key& key) const {
+        return storage_.position().net_notional.get(key);
+    }
+
+    // ========================================================================
+    // Direct position manipulation (for testing/initialization)
+    // ========================================================================
+
+    // Set position for a specific instrument by signed quantity
+    // Positive quantity = long (BID), negative quantity = short (ASK)
+    // Computes notional from instrument data: qty * contract_size * spot_price * fx_rate
+    template<typename Dummy = void>
+    std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, void>
+    set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
+        if (!provider_) return;
+
+        Key key = aggregation::GlobalKey::instance();
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (!pos_data) return;
+
+        // Remove old contribution if exists
+        auto it = pos_data->instrument_quantities.find(symbol);
+        if (it != pos_data->instrument_quantities.end()) {
+            double old_net = compute_net_from_signed_qty(symbol, it->second);
+            pos_data->net_notional.remove(key, old_net);
+        }
+
+        // Add new contribution
+        double new_net = compute_net_from_signed_qty(symbol, signed_quantity);
+        pos_data->net_notional.add(key, new_net);
+        pos_data->instrument_quantities[symbol] = signed_quantity;
+    }
+
+    // Get the manual position for a specific instrument
+    double get_instrument_position(const std::string& symbol) const {
+        if constexpr (Storage::Config::track_position) {
+            const auto& pos_data = storage_.position();
+            auto it = pos_data.instrument_quantities.find(symbol);
+            if (it != pos_data.instrument_quantities.end()) {
+                return compute_net_from_signed_qty(symbol, it->second);
+            }
+        }
+        return 0.0;
+    }
+
+    // Clear manual position for a specific instrument
+    void clear_instrument_position(const std::string& symbol) {
+        if constexpr (Storage::Config::track_position) {
+            Key key = aggregation::GlobalKey::instance();
+            auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+            if (!pos_data) return;
+
+            auto it = pos_data->instrument_quantities.find(symbol);
+            if (it != pos_data->instrument_quantities.end()) {
+                double old_net = compute_net_from_signed_qty(symbol, it->second);
+                pos_data->net_notional.remove(key, old_net);
+                pos_data->instrument_quantities.erase(it);
+            }
+        }
+    }
+
+    // ========================================================================
+    // Generic metric interface
+    // ========================================================================
+
+    void on_order_added(const engine::TrackedOrder& order) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double net = compute_net(order);
+        auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
+        if (stage_data) {
+            stage_data->net_notional.add(key, net);
+        }
+    }
+
+    void on_order_removed(const engine::TrackedOrder& order) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double net = compute_net(order);
+        auto stage = aggregation::stage_from_order_state(order.state);
+        auto* stage_data = storage_.get_stage(stage);
+        if (stage_data) {
+            stage_data->net_notional.remove(key, net);
+        }
+    }
+
+    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double old_net = compute_net(order.symbol, old_qty, order.side);
+        double new_net = compute_net(order);
+        auto stage = aggregation::stage_from_order_state(order.state);
+        auto* stage_data = storage_.get_stage(stage);
+        if (stage_data) {
+            stage_data->net_notional.remove(key, old_net);
+            stage_data->net_notional.add(key, new_net);
+        }
+    }
+
+    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double filled_net = compute_net(order.symbol, filled_qty, order.side);
+
+        auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
+        if (open_data) {
+            open_data->net_notional.remove(key, filled_net);
+        }
+
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (pos_data) {
+            pos_data->net_notional.add(key, filled_net);
+        }
+    }
+
+    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double filled_net = compute_net(order.symbol, filled_qty, order.side);
+
+        auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
+        if (pos_data) {
+            pos_data->net_notional.add(key, filled_net);
+        }
+    }
+
+    void on_state_change(const engine::TrackedOrder& order,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        auto old_stage = aggregation::stage_from_order_state(old_state);
+        auto new_stage = aggregation::stage_from_order_state(new_state);
+
+        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
+            Key key = extract_order_key(order);
+            double net = compute_net(order);
+
+            auto* old_data = storage_.get_stage(old_stage);
+            auto* new_data = storage_.get_stage(new_stage);
+
+            if (old_data) {
+                old_data->net_notional.remove(key, net);
+            }
+            if (new_data) {
+                new_data->net_notional.add(key, net);
+            }
+        }
+    }
+
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
+        Key key = extract_order_key(order);
+        double old_net = compute_net(order.symbol, old_qty, order.side);
+        double new_net = compute_net(order);
+
+        auto old_stage = aggregation::stage_from_order_state(old_state);
+        auto new_stage = aggregation::stage_from_order_state(new_state);
+
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
+
+        if (old_data) {
+            old_data->net_notional.remove(key, old_net);
+        }
+        if (new_data) {
+            new_data->net_notional.add(key, new_net);
+        }
+    }
+
+    void clear() {
+        storage_.clear();
+    }
+};
+
+// ============================================================================
+// Type aliases for Gross/Net notional metrics
+// ============================================================================
+
+template<typename Provider, typename... Stages>
+using GlobalGrossNotionalMetric = GrossNotionalMetric<aggregation::GlobalKey, Provider, Stages...>;
+
+template<typename Provider, typename... Stages>
+using GlobalNetNotionalMetric = NetNotionalMetric<aggregation::GlobalKey, Provider, Stages...>;
+
 } // namespace metrics
 
 // Include TrackedOrder definition and implement generic interface

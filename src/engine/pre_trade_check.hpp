@@ -18,7 +18,9 @@ enum class LimitType {
     NET_DELTA,             // Per-underlyer net delta
     STRATEGY_NOTIONAL,     // Per-strategy notional
     PORTFOLIO_NOTIONAL,    // Per-portfolio notional
-    GLOBAL_NOTIONAL        // Global notional
+    GLOBAL_NOTIONAL,       // Global notional
+    GLOBAL_GROSS_NOTIONAL, // Global gross notional (sum of |notional|)
+    GLOBAL_NET_NOTIONAL    // Global net notional (BID - ASK)
 };
 
 inline const char* to_string(LimitType type) {
@@ -30,6 +32,8 @@ inline const char* to_string(LimitType type) {
         case LimitType::STRATEGY_NOTIONAL: return "STRATEGY_NOTIONAL";
         case LimitType::PORTFOLIO_NOTIONAL: return "PORTFOLIO_NOTIONAL";
         case LimitType::GLOBAL_NOTIONAL: return "GLOBAL_NOTIONAL";
+        case LimitType::GLOBAL_GROSS_NOTIONAL: return "GLOBAL_GROSS_NOTIONAL";
+        case LimitType::GLOBAL_NET_NOTIONAL: return "GLOBAL_NET_NOTIONAL";
         default: return "UNKNOWN";
     }
 }

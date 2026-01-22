@@ -6,8 +6,28 @@
 #include "../fix/fix_messages.hpp"
 #include "../instrument/instrument.hpp"
 #include <tuple>
+#include <type_traits>
 
 namespace engine {
+
+// ============================================================================
+// Type trait: has_set_instrument_position
+// ============================================================================
+//
+// Detects if a metric type has a set_instrument_position(symbol, qty) method
+//
+
+template<typename T, typename = void>
+struct has_set_instrument_position : std::false_type {};
+
+template<typename T>
+struct has_set_instrument_position<T,
+    std::void_t<decltype(std::declval<T>().set_instrument_position(
+        std::declval<std::string>(), std::declval<int64_t>()))>
+> : std::true_type {};
+
+template<typename T>
+inline constexpr bool has_set_instrument_position_v = has_set_instrument_position<T>::value;
 
 // ============================================================================
 // GenericRiskAggregationEngine - Template-based aggregation engine
@@ -224,6 +244,22 @@ public:
         });
     }
 
+    // ========================================================================
+    // Position management
+    // ========================================================================
+
+    // Set position for a specific instrument across all metrics that support it
+    // Signed quantity: positive = long, negative = short
+    // For gross metrics, absolute value is used internally
+    void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
+        for_each_metric([&symbol, signed_quantity](auto& metric) {
+            using MetricType = std::decay_t<decltype(metric)>;
+            if constexpr (has_set_instrument_position_v<MetricType>) {
+                metric.set_instrument_position(symbol, signed_quantity);
+            }
+        });
+    }
+
 private:
     void handle_insert_ack(const fix::ExecutionReport& msg) {
         auto* order = order_book_.get_order(msg.key);
@@ -338,9 +374,17 @@ private:
         auto* order = order_book_.resolve_order(msg.key);
         if (!order) return;
 
+        // Get the filled quantity before removal (order->leaves_qty will be updated)
+        int64_t filled_qty = msg.last_qty;
+
         // Remove metrics BEFORE apply_fill updates leaves_qty to 0
         for_each_metric([order](auto& metric) {
             metric.on_order_removed(*order);
+        });
+
+        // Credit position stage with filled quantity
+        for_each_metric([order, filled_qty](auto& metric) {
+            metric.on_full_fill(*order, filled_qty);
         });
 
         order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
@@ -513,6 +557,22 @@ public:
         });
     }
 
+    // ========================================================================
+    // Position management
+    // ========================================================================
+
+    // Set position for a specific instrument across all metrics that support it
+    // Signed quantity: positive = long, negative = short
+    // For gross metrics, absolute value is used internally
+    void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
+        for_each_metric([&symbol, signed_quantity](auto& metric) {
+            using MetricType = std::decay_t<decltype(metric)>;
+            if constexpr (has_set_instrument_position_v<MetricType>) {
+                metric.set_instrument_position(symbol, signed_quantity);
+            }
+        });
+    }
+
 private:
     void handle_insert_ack(const fix::ExecutionReport& msg) {
         auto* order = order_book_.get_order(msg.key);
@@ -627,9 +687,17 @@ private:
         auto* order = order_book_.resolve_order(msg.key);
         if (!order) return;
 
+        // Get the filled quantity before removal (order->leaves_qty will be updated)
+        int64_t filled_qty = msg.last_qty;
+
         // Remove metrics BEFORE apply_fill updates leaves_qty to 0
         for_each_metric([order](auto& metric) {
             metric.on_order_removed(*order);
+        });
+
+        // Credit position stage with filled quantity
+        for_each_metric([order, filled_qty](auto& metric) {
+            metric.on_full_fill(*order, filled_qty);
         });
 
         order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
