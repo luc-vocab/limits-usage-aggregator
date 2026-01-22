@@ -84,17 +84,18 @@ StaticInstrumentProvider create_vega_delta_provider() {
     provider.add_equity("AAPL", 150.0);  // spot=$150
 
     // AAPL options with vega
+    // add_option(symbol, underlyer, spot, underlyer_spot, delta, contract_size, fx_rate, vega)
     // AAPL_C150: Call, spot=$5.00, underlyer_spot=$150, delta=0.5, vega=0.25, contract_size=100
-    provider.add_option("AAPL_C150", "AAPL", 5.0, 150.0, 0.5, 0.25, 100.0, 1.0);
+    provider.add_option("AAPL_C150", "AAPL", 5.0, 150.0, 0.5, 100.0, 1.0, 0.25);
     // AAPL_P150: Put, spot=$3.00, underlyer_spot=$150, delta=-0.4, vega=0.20, contract_size=100
-    provider.add_option("AAPL_P150", "AAPL", 3.0, 150.0, -0.4, 0.20, 100.0, 1.0);
+    provider.add_option("AAPL_P150", "AAPL", 3.0, 150.0, -0.4, 100.0, 1.0, 0.20);
 
     // MSFT stock: delta=1, vega=0, contract_size=1
     provider.add_equity("MSFT", 300.0);  // spot=$300
 
     // MSFT options with vega
     // MSFT_C300: Call, spot=$8.00, underlyer_spot=$300, delta=0.6, vega=0.30, contract_size=100
-    provider.add_option("MSFT_C300", "MSFT", 8.0, 300.0, 0.6, 0.30, 100.0, 1.0);
+    provider.add_option("MSFT_C300", "MSFT", 8.0, 300.0, 0.6, 100.0, 1.0, 0.30);
 
     return provider;
 }

@@ -319,9 +319,9 @@ public:
                    double spot_price,
                    double underlyer_spot,
                    double delta,
-                   double vega = 0.0,
                    double contract_size = 100.0,
-                   double fx_rate = 1.0) {
+                   double fx_rate = 1.0,
+                   double vega = 0.0) {
         InstrumentData data;
         data.spot_price = spot_price;
         data.fx_rate = fx_rate;
