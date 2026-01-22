@@ -5,7 +5,9 @@ package(default_visibility = ["//visibility:public"])
 cc_library(
     name = "metrics",
     hdrs = [
+        "base_exposure_metric.hpp",
         "delta_metric.hpp",
+        "metric_policies.hpp",
         "notional_metric.hpp",
         "order_count_metric.hpp",
         "vega_metric.hpp",
