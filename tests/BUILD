@@ -8,6 +8,7 @@ cc_test(
         "integration_test_gross_notional.cpp",
         "integration_test_option_underlyer_refactored.cpp",
         "integration_test_options_gross_net_check.cpp",
+        "integration_test_portfolio_instrument_notional.cpp",
         "integration_test_pre_trade_check_updates.cpp",
         "integration_test_vega_delta_combined.cpp",
     ],

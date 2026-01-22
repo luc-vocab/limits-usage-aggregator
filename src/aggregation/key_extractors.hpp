@@ -83,6 +83,14 @@ struct KeyExtractor<InstrumentSideKey> {
     }
 };
 
+// PortfolioInstrumentKey extractor - only applicable if portfolio_id is non-empty
+template<>
+struct KeyExtractor<PortfolioInstrumentKey> {
+    static PortfolioInstrumentKey extract(const engine::TrackedOrder& order);
+
+    static bool is_applicable(const engine::TrackedOrder& order);
+};
+
 } // namespace aggregation
 
 // Include TrackedOrder definition and implement extractors
@@ -116,6 +124,14 @@ inline bool KeyExtractor<PortfolioKey>::is_applicable(const engine::TrackedOrder
 
 inline InstrumentSideKey KeyExtractor<InstrumentSideKey>::extract(const engine::TrackedOrder& order) {
     return InstrumentSideKey{order.symbol, static_cast<int>(order.side)};
+}
+
+inline PortfolioInstrumentKey KeyExtractor<PortfolioInstrumentKey>::extract(const engine::TrackedOrder& order) {
+    return PortfolioInstrumentKey{order.portfolio_id, order.symbol};
+}
+
+inline bool KeyExtractor<PortfolioInstrumentKey>::is_applicable(const engine::TrackedOrder& order) {
+    return !order.portfolio_id.empty();
 }
 
 } // namespace aggregation

@@ -78,6 +78,19 @@ struct InstrumentSideKey {
     }
 };
 
+// Composite key for portfolio + instrument
+struct PortfolioInstrumentKey {
+    std::string portfolio_id;
+    std::string symbol;
+
+    bool operator==(const PortfolioInstrumentKey& other) const {
+        return portfolio_id == other.portfolio_id && symbol == other.symbol;
+    }
+    bool operator!=(const PortfolioInstrumentKey& other) const {
+        return !(*this == other);
+    }
+};
+
 } // namespace aggregation
 
 // Hash specializations
@@ -122,6 +135,15 @@ namespace std {
         size_t operator()(const aggregation::InstrumentSideKey& key) const {
             size_t h1 = hash<string>{}(key.symbol);
             size_t h2 = hash<int>{}(key.side);
+            return h1 ^ (h2 << 1);
+        }
+    };
+
+    template<>
+    struct hash<aggregation::PortfolioInstrumentKey> {
+        size_t operator()(const aggregation::PortfolioInstrumentKey& key) const {
+            size_t h1 = hash<string>{}(key.portfolio_id);
+            size_t h2 = hash<string>{}(key.symbol);
             return h1 ^ (h2 << 1);
         }
     };

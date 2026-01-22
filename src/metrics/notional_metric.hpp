@@ -638,6 +638,8 @@ public:
             return Key{order.strategy_id};
         } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
             return Key{order.portfolio_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioInstrumentKey>) {
+            return Key{order.portfolio_id, order.symbol};
         } else {
             static_assert(sizeof(Key) == 0, "Unsupported key type for NetNotionalMetric");
         }
