@@ -19,7 +19,6 @@ cc_library(
     name = "multi_group",
     hdrs = [
         "key_extractors.hpp",
-        "multi_group_aggregator.hpp",
     ],
     deps = [
         ":aggregation",
