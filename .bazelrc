@@ -24,3 +24,6 @@ build:asan --cxxopt=-fno-omit-frame-pointer
 build:asan --cxxopt=-g
 build:asan --cxxopt=-O1
 build:asan --linkopt=-fsanitize=address
+
+# Always enable Address Sanitizer for tests
+test --config=asan
