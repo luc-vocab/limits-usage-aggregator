@@ -17,23 +17,29 @@ A high-performance aggregation engine for pre-trade risk checks that processes F
 # Build the Docker image (first time or after Dockerfile changes)
 docker build -t aggregator-build .
 
-# Common docker run options (run as current user to avoid root-owned files)
-# All commands below use: --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un)
+# Common docker run options:
+# - Run as current user to avoid root-owned files
+# - Mount persistent Bazel cache for fast incremental builds
+# All commands below use these options:
+#   --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un)
+#   -v /volatile_home/luc/temp/risk_engine:/bazel-cache
+# Bazel startup options: --output_base=/bazel-cache/output --install_base=/bazel-cache/install
+# Bazel command options: --repository_cache=/bazel-cache/repos
 
 # Build all targets
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel build //...
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install build --repository_cache=/bazel-cache/repos //...
 
 # Run all tests
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install test --repository_cache=/bazel-cache/repos //tests:test_runner
 
 # Run tests with verbose output
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_output=all
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install test --repository_cache=/bazel-cache/repos //tests:test_runner --test_output=all
 
 # Build with debug symbols
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel build --config=debug //...
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install build --repository_cache=/bazel-cache/repos --config=debug //...
 
 # Clean build artifacts
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel clean
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install clean
 ```
 
 ### Project Structure
@@ -256,13 +262,13 @@ NewOrderSingle sent
 ### Running Tests
 ```bash
 # Run all tests
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install test --repository_cache=/bazel-cache/repos //tests:test_runner
 
 # Run tests with verbose output
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_output=all
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install test --repository_cache=/bazel-cache/repos //tests:test_runner --test_output=all
 
 # Run with test filter (via --test_arg)
-docker run --rm -v $(pwd):/src -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel test //tests:test_runner --test_arg=--filter=aggregation
+docker run --rm -v $(pwd):/src -v /volatile_home/luc/temp/risk_engine:/bazel-cache -w /src --user $(id -u):$(id -g) -e HOME=/tmp -e USER=$(id -un) aggregator-build bazel --output_base=/bazel-cache/output --install_base=/bazel-cache/install test --repository_cache=/bazel-cache/repos //tests:test_runner --test_arg=--filter=aggregation
 ```
 
 ## Code Style
