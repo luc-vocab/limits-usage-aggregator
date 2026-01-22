@@ -8,295 +8,159 @@
 namespace instrument {
 
 // ============================================================================
-// Instrument Traits (C++17 compatible via SFINAE)
+// Instrument Types and Context Traits
 // ============================================================================
 //
-// Traits to validate that an Instrument type satisfies the required interface.
-// Instrument types must provide methods (not member access), allowing any
-// type that implements the required methods to be used.
+// This header provides:
+//   1. Context traits - compile-time validation for Context types that provide
+//      accessor methods for retrieving instrument data
+//   2. InstrumentData - a concrete instrument data type
+//   3. NullInstrument - placeholder for metrics that don't need instrument data
+//   4. Provider classes - SimpleInstrumentProvider and StaticInstrumentProvider
 //
-// Required methods for base Instrument:
-//   - double spot_price() const
-//   - double fx_rate() const
-//   - double contract_size() const
-//
-// Additional methods for option-aware Instrument:
-//   - std::string underlyer() const (or const std::string&)
-//   - double underlyer_spot() const
-//   - double delta() const
-//
-// Additional methods for vega-aware Instrument:
-//   - double vega() const
+// The Instrument template type is treated as opaque - no compile-time validation
+// is performed on Instrument types. Any type can be used as an Instrument, and
+// errors will occur if required methods are missing when called.
 //
 // No virtual functions - compile-time polymorphism via templates.
 //
 
 // ============================================================================
-// Individual method traits for Instrument types
+// Context Traits - Validates Context types provide accessor methods
 // ============================================================================
+//
+// These traits check that a Context type provides the required accessor methods
+// for retrieving instrument data. The Context is parameterized on the Instrument
+// type to allow for flexible instrument lookup patterns.
+//
+// Context requirements for notional computation:
+//   - double contract_size(const Instrument&) const
+//   - double spot_price(const Instrument&) const
+//   - double fx_rate(const Instrument&) const
+//
+// Additional context requirements for delta computation:
+//   - double delta(const Instrument&) const
+//   - double underlyer_spot(const Instrument&) const
+//
+// Additional context requirements for vega computation:
+//   - double vega(const Instrument&) const
+//
 
-template<typename T, typename = void>
-struct has_spot_price_method : std::false_type {};
+// Individual Context method traits
+template<typename C, typename I, typename = void>
+struct has_context_contract_size : std::false_type {};
 
-template<typename T>
-struct has_spot_price_method<T, std::void_t<
-    decltype(std::declval<const T&>().spot_price())
+template<typename C, typename I>
+struct has_context_contract_size<C, I, std::void_t<
+    decltype(std::declval<const C&>().contract_size(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_spot_price_method_v = has_spot_price_method<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_contract_size_v = has_context_contract_size<C, I>::value;
 
-template<typename T, typename = void>
-struct has_fx_rate_method : std::false_type {};
+template<typename C, typename I, typename = void>
+struct has_context_spot_price : std::false_type {};
 
-template<typename T>
-struct has_fx_rate_method<T, std::void_t<
-    decltype(std::declval<const T&>().fx_rate())
+template<typename C, typename I>
+struct has_context_spot_price<C, I, std::void_t<
+    decltype(std::declval<const C&>().spot_price(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_fx_rate_method_v = has_fx_rate_method<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_spot_price_v = has_context_spot_price<C, I>::value;
 
-template<typename T, typename = void>
-struct has_contract_size_method : std::false_type {};
+template<typename C, typename I, typename = void>
+struct has_context_fx_rate : std::false_type {};
 
-template<typename T>
-struct has_contract_size_method<T, std::void_t<
-    decltype(std::declval<const T&>().contract_size())
+template<typename C, typename I>
+struct has_context_fx_rate<C, I, std::void_t<
+    decltype(std::declval<const C&>().fx_rate(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_contract_size_method_v = has_contract_size_method<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_fx_rate_v = has_context_fx_rate<C, I>::value;
 
-template<typename T, typename = void>
-struct has_underlyer_method : std::false_type {};
+template<typename C, typename I, typename = void>
+struct has_context_delta : std::false_type {};
 
-template<typename T>
-struct has_underlyer_method<T, std::void_t<
-    decltype(std::declval<const T&>().underlyer())
+template<typename C, typename I>
+struct has_context_delta<C, I, std::void_t<
+    decltype(std::declval<const C&>().delta(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_underlyer_method_v = has_underlyer_method<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_delta_v = has_context_delta<C, I>::value;
 
-template<typename T, typename = void>
-struct has_underlyer_spot_method : std::false_type {};
+template<typename C, typename I, typename = void>
+struct has_context_underlyer_spot : std::false_type {};
 
-template<typename T>
-struct has_underlyer_spot_method<T, std::void_t<
-    decltype(std::declval<const T&>().underlyer_spot())
+template<typename C, typename I>
+struct has_context_underlyer_spot<C, I, std::void_t<
+    decltype(std::declval<const C&>().underlyer_spot(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_underlyer_spot_method_v = has_underlyer_spot_method<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_underlyer_spot_v = has_context_underlyer_spot<C, I>::value;
 
-template<typename T, typename = void>
-struct has_delta_method : std::false_type {};
+template<typename C, typename I, typename = void>
+struct has_context_vega : std::false_type {};
 
-template<typename T>
-struct has_delta_method<T, std::void_t<
-    decltype(std::declval<const T&>().delta())
+template<typename C, typename I>
+struct has_context_vega<C, I, std::void_t<
+    decltype(std::declval<const C&>().vega(std::declval<const I&>()))
 >> : std::true_type {};
 
-template<typename T>
-inline constexpr bool has_delta_method_v = has_delta_method<T>::value;
-
-template<typename T, typename = void>
-struct has_vega_method : std::false_type {};
-
-template<typename T>
-struct has_vega_method<T, std::void_t<
-    decltype(std::declval<const T&>().vega())
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_vega_method_v = has_vega_method<T>::value;
-
-// ============================================================================
-// Combined Instrument traits
-// ============================================================================
-
-// Base instrument: spot_price + fx_rate + contract_size
-template<typename T>
-struct is_base_instrument : std::conjunction<
-    has_spot_price_method<T>,
-    has_fx_rate_method<T>,
-    has_contract_size_method<T>
-> {};
-
-template<typename T>
-inline constexpr bool is_base_instrument_v = is_base_instrument<T>::value;
-
-// Notional instrument: same as base (alias for clarity)
-template<typename T>
-using is_notional_instrument = is_base_instrument<T>;
-
-template<typename T>
-inline constexpr bool is_notional_instrument_v = is_base_instrument_v<T>;
-
-// Option instrument: base + underlyer, underlyer_spot, delta
-template<typename T>
-struct is_option_instrument : std::conjunction<
-    is_base_instrument<T>,
-    has_underlyer_method<T>,
-    has_underlyer_spot_method<T>,
-    has_delta_method<T>
-> {};
-
-template<typename T>
-inline constexpr bool is_option_instrument_v = is_option_instrument<T>::value;
-
-// Backward compatibility alias
-template<typename T>
-using is_instrument = is_option_instrument<T>;
-
-template<typename T>
-inline constexpr bool is_instrument_v = is_option_instrument_v<T>;
-
-// Vega instrument: option instrument + vega
-template<typename T>
-struct is_vega_instrument : std::conjunction<
-    is_option_instrument<T>,
-    has_vega_method<T>
-> {};
-
-template<typename T>
-inline constexpr bool is_vega_instrument_v = is_vega_instrument<T>::value;
+template<typename C, typename I>
+inline constexpr bool has_context_vega_v = has_context_vega<C, I>::value;
 
 // ============================================================================
-// Legacy Provider Traits (for backward compatibility during transition)
+// Combined Context traits
 // ============================================================================
 
-template<typename T, typename = void>
-struct has_spot_price : std::false_type {};
-
-template<typename T>
-struct has_spot_price<T, std::void_t<
-    decltype(std::declval<const T&>().get_spot_price(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_spot_price_v = has_spot_price<T>::value;
-
-template<typename T, typename = void>
-struct has_fx_rate : std::false_type {};
-
-template<typename T>
-struct has_fx_rate<T, std::void_t<
-    decltype(std::declval<const T&>().get_fx_rate(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_fx_rate_v = has_fx_rate<T>::value;
-
-template<typename T, typename = void>
-struct has_contract_size : std::false_type {};
-
-template<typename T>
-struct has_contract_size<T, std::void_t<
-    decltype(std::declval<const T&>().get_contract_size(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_contract_size_v = has_contract_size<T>::value;
-
-template<typename T, typename = void>
-struct has_underlyer : std::false_type {};
-
-template<typename T>
-struct has_underlyer<T, std::void_t<
-    decltype(std::declval<const T&>().get_underlyer(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_underlyer_v = has_underlyer<T>::value;
-
-template<typename T, typename = void>
-struct has_underlyer_spot : std::false_type {};
-
-template<typename T>
-struct has_underlyer_spot<T, std::void_t<
-    decltype(std::declval<const T&>().get_underlyer_spot(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_underlyer_spot_v = has_underlyer_spot<T>::value;
-
-template<typename T, typename = void>
-struct has_delta : std::false_type {};
-
-template<typename T>
-struct has_delta<T, std::void_t<
-    decltype(std::declval<const T&>().get_delta(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_delta_v = has_delta<T>::value;
-
-template<typename T, typename = void>
-struct has_vega : std::false_type {};
-
-template<typename T>
-struct has_vega<T, std::void_t<
-    decltype(std::declval<const T&>().get_vega(std::declval<const std::string&>()))
->> : std::true_type {};
-
-template<typename T>
-inline constexpr bool has_vega_v = has_vega<T>::value;
-
-// Combined provider traits (legacy)
-template<typename T>
-struct is_base_provider : std::conjunction<has_spot_price<T>, has_fx_rate<T>> {};
-
-template<typename T>
-inline constexpr bool is_base_provider_v = is_base_provider<T>::value;
-
-template<typename T>
-struct is_notional_provider : std::conjunction<
-    is_base_provider<T>,
-    has_contract_size<T>
+// Notional context: contract_size + spot_price + fx_rate
+template<typename C, typename I>
+struct is_notional_context : std::conjunction<
+    has_context_contract_size<C, I>,
+    has_context_spot_price<C, I>,
+    has_context_fx_rate<C, I>
 > {};
 
-template<typename T>
-inline constexpr bool is_notional_provider_v = is_notional_provider<T>::value;
+template<typename C, typename I>
+inline constexpr bool is_notional_context_v = is_notional_context<C, I>::value;
 
-template<typename T>
-struct is_option_provider : std::conjunction<
-    is_base_provider<T>,
-    has_contract_size<T>,
-    has_underlyer<T>,
-    has_underlyer_spot<T>,
-    has_delta<T>
+// Delta context: notional context + delta + underlyer_spot
+template<typename C, typename I>
+struct is_delta_context : std::conjunction<
+    is_notional_context<C, I>,
+    has_context_delta<C, I>,
+    has_context_underlyer_spot<C, I>
 > {};
 
-template<typename T>
-inline constexpr bool is_option_provider_v = is_option_provider<T>::value;
+template<typename C, typename I>
+inline constexpr bool is_delta_context_v = is_delta_context<C, I>::value;
 
-template<typename T>
-using is_instrument_provider = is_option_provider<T>;
-
-template<typename T>
-inline constexpr bool is_instrument_provider_v = is_option_provider_v<T>;
-
-template<typename T>
-struct is_vega_provider : std::conjunction<
-    is_option_provider<T>,
-    has_vega<T>
+// Vega context: delta context + vega
+template<typename C, typename I>
+struct is_vega_context : std::conjunction<
+    is_delta_context<C, I>,
+    has_context_vega<C, I>
 > {};
 
-template<typename T>
-inline constexpr bool is_vega_provider_v = is_vega_provider<T>::value;
+template<typename C, typename I>
+inline constexpr bool is_vega_context_v = is_vega_context<C, I>::value;
 
 // ============================================================================
 // Free function templates for computing values from any Instrument type
 // ============================================================================
+//
+// These functions work with any Instrument type that provides the required
+// methods. The Instrument type is not validated at compile time - errors
+// will occur if required methods are missing.
+//
 
 // Compute notional: quantity * contract_size * spot_price * fx_rate
-// Requires: is_notional_instrument_v<Instrument>
 template<typename Instrument>
 double compute_notional(const Instrument& inst, int64_t quantity) {
-    static_assert(is_notional_instrument_v<Instrument>,
-                  "Instrument must satisfy notional instrument requirements (spot_price, fx_rate, contract_size)");
     return static_cast<double>(quantity)
          * inst.contract_size()
          * inst.spot_price()
@@ -304,11 +168,8 @@ double compute_notional(const Instrument& inst, int64_t quantity) {
 }
 
 // Compute delta exposure: quantity * delta * contract_size * underlyer_spot * fx_rate
-// Requires: is_option_instrument_v<Instrument>
 template<typename Instrument>
 double compute_delta_exposure(const Instrument& inst, int64_t quantity) {
-    static_assert(is_option_instrument_v<Instrument>,
-                  "Instrument must satisfy option instrument requirements (underlyer, delta support)");
     return static_cast<double>(quantity)
          * inst.delta()
          * inst.contract_size()
@@ -317,11 +178,8 @@ double compute_delta_exposure(const Instrument& inst, int64_t quantity) {
 }
 
 // Compute vega exposure: quantity * vega * contract_size * underlyer_spot * fx_rate
-// Requires: is_vega_instrument_v<Instrument>
 template<typename Instrument>
 double compute_vega_exposure(const Instrument& inst, int64_t quantity) {
-    static_assert(is_vega_instrument_v<Instrument>,
-                  "Instrument must satisfy vega instrument requirements (vega support)");
     return static_cast<double>(quantity)
          * inst.vega()
          * inst.contract_size()
@@ -352,6 +210,8 @@ double compute_vega_exposure(const Instrument& inst, int64_t quantity) {
 
 template<typename Context, typename Instrument>
 double compute_notional(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    static_assert(is_notional_context_v<Context, Instrument>,
+                  "Context must provide contract_size, spot_price, fx_rate methods");
     return static_cast<double>(quantity)
          * ctx.contract_size(inst)
          * ctx.spot_price(inst)
@@ -360,6 +220,8 @@ double compute_notional(const Context& ctx, const Instrument& inst, int64_t quan
 
 template<typename Context, typename Instrument>
 double compute_delta_exposure(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    static_assert(is_delta_context_v<Context, Instrument>,
+                  "Context must provide delta, underlyer_spot methods (plus notional context)");
     return static_cast<double>(quantity)
          * ctx.delta(inst)
          * ctx.contract_size(inst)
@@ -369,44 +231,13 @@ double compute_delta_exposure(const Context& ctx, const Instrument& inst, int64_
 
 template<typename Context, typename Instrument>
 double compute_vega_exposure(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    static_assert(is_vega_context_v<Context, Instrument>,
+                  "Context must provide vega method (plus delta context)");
     return static_cast<double>(quantity)
          * ctx.vega(inst)
          * ctx.contract_size(inst)
          * ctx.underlyer_spot(inst)
          * ctx.fx_rate(inst);
-}
-
-// Legacy overloads for Provider-based API (backward compatibility)
-template<typename Provider>
-double compute_notional(const Provider& provider, const std::string& symbol, int64_t quantity) {
-    static_assert(is_notional_provider_v<Provider>,
-                  "Provider must satisfy notional provider requirements (spot, fx, contract_size)");
-    return static_cast<double>(quantity)
-         * provider.get_contract_size(symbol)
-         * provider.get_spot_price(symbol)
-         * provider.get_fx_rate(symbol);
-}
-
-template<typename Provider>
-double compute_delta_exposure(const Provider& provider, const std::string& symbol, int64_t quantity) {
-    static_assert(is_option_provider_v<Provider>,
-                  "Provider must satisfy option provider requirements (underlyer, delta support)");
-    return static_cast<double>(quantity)
-         * provider.get_delta(symbol)
-         * provider.get_contract_size(symbol)
-         * provider.get_underlyer_spot(symbol)
-         * provider.get_fx_rate(symbol);
-}
-
-template<typename Provider>
-double compute_vega_exposure(const Provider& provider, const std::string& symbol, int64_t quantity) {
-    static_assert(is_vega_provider_v<Provider>,
-                  "Provider must satisfy vega provider requirements (vega support)");
-    return static_cast<double>(quantity)
-         * provider.get_vega(symbol)
-         * provider.get_contract_size(symbol)
-         * provider.get_underlyer_spot(symbol)
-         * provider.get_fx_rate(symbol);
 }
 
 // ============================================================================
@@ -510,12 +341,6 @@ public:
     }
 };
 
-// Static assertion to verify InstrumentData satisfies instrument traits
-static_assert(is_instrument_v<InstrumentData>,
-              "InstrumentData must satisfy Instrument requirements");
-static_assert(is_vega_instrument_v<InstrumentData>,
-              "InstrumentData must satisfy VegaInstrument requirements");
-
 // ============================================================================
 // NullInstrument - Placeholder for metrics that don't need instrument data
 // ============================================================================
@@ -540,10 +365,6 @@ struct NullInstrument {
         return inst;
     }
 };
-
-// Static assertion to verify NullInstrument satisfies instrument traits
-static_assert(is_vega_instrument_v<NullInstrument>,
-              "NullInstrument must satisfy Instrument requirements");
 
 // ============================================================================
 // SimpleInstrumentProvider - Minimal provider for testing (legacy)
@@ -601,14 +422,6 @@ public:
             .with_underlyer(symbol);
     }
 };
-
-// Static assertions for SimpleInstrumentProvider
-static_assert(is_base_provider_v<SimpleInstrumentProvider>,
-              "SimpleInstrumentProvider must satisfy base provider");
-static_assert(is_notional_provider_v<SimpleInstrumentProvider>,
-              "SimpleInstrumentProvider must satisfy notional provider");
-static_assert(!is_option_provider_v<SimpleInstrumentProvider>,
-              "SimpleInstrumentProvider should NOT satisfy option provider");
 
 // ============================================================================
 // StaticInstrumentProvider - Full provider with pre-loaded data
@@ -736,24 +549,29 @@ public:
         return get_instrument(symbol).vega();
     }
 
-    // Convenience methods using free function templates
+    // Convenience methods for computing exposures
     double compute_notional(const std::string& symbol, int64_t quantity) const {
-        return instrument::compute_notional(*this, symbol, quantity);
+        return static_cast<double>(quantity)
+             * get_contract_size(symbol)
+             * get_spot_price(symbol)
+             * get_fx_rate(symbol);
     }
 
     double compute_delta_exposure(const std::string& symbol, int64_t quantity) const {
-        return instrument::compute_delta_exposure(*this, symbol, quantity);
+        return static_cast<double>(quantity)
+             * get_delta(symbol)
+             * get_contract_size(symbol)
+             * get_underlyer_spot(symbol)
+             * get_fx_rate(symbol);
     }
 
     double compute_vega_exposure(const std::string& symbol, int64_t quantity) const {
-        return instrument::compute_vega_exposure(*this, symbol, quantity);
+        return static_cast<double>(quantity)
+             * get_vega(symbol)
+             * get_contract_size(symbol)
+             * get_underlyer_spot(symbol)
+             * get_fx_rate(symbol);
     }
 };
-
-// Static assertion to verify StaticInstrumentProvider satisfies provider traits
-static_assert(is_instrument_provider_v<StaticInstrumentProvider>,
-              "StaticInstrumentProvider must satisfy InstrumentProvider requirements");
-static_assert(is_vega_provider_v<StaticInstrumentProvider>,
-              "StaticInstrumentProvider must satisfy VegaProvider requirements");
 
 } // namespace instrument

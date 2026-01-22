@@ -95,9 +95,6 @@ template<typename ContextType, typename Instrument, typename... Metrics>
 class GenericRiskAggregationEngine
     : public AccessorMixin<GenericRiskAggregationEngine<ContextType, Instrument, Metrics...>, Metrics>... {
 
-    static_assert(instrument::is_instrument_v<Instrument>,
-                  "Instrument must satisfy instrument requirements");
-
 private:
     const ContextType& context_;
     OrderBook order_book_;
