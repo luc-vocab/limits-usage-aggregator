@@ -58,6 +58,19 @@ public:
         return instrument::compute_notional(*provider, order.symbol, order.quantity);
     }
 
+    // Compute the notional contribution for an order update (new - old)
+    static double compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& update,
+        const engine::TrackedOrder& existing_order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double old_notional = instrument::compute_notional(
+            *provider, existing_order.symbol, existing_order.leaves_qty);
+        double new_notional = instrument::compute_notional(
+            *provider, update.symbol, update.quantity);
+        return new_notional - old_notional;
+    }
+
     // Extract the key from a NewOrderSingle
     static Key extract_key(const fix::NewOrderSingle& order) {
         if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {

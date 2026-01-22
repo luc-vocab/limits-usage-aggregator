@@ -93,7 +93,7 @@ public:
     // Get combined delta (gross, net) across all tracked stages for a key
     aggregation::DeltaValue get(const Key& key) const {
         aggregation::DeltaValue total{0.0, 0.0};
-        storage_.for_each_stage([&key, &total](const StageData& data) {
+        storage_.for_each_stage([&key, &total](aggregation::OrderStage /*stage*/, const StageData& data) {
             auto val = data.delta.get(key);
             total.gross += val.gross;
             total.net += val.net;
@@ -289,6 +289,19 @@ public:
         return std::abs(delta_exp);
     }
 
+    // Compute the gross delta contribution for an order update (new - old)
+    static double compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& update,
+        const engine::TrackedOrder& existing_order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double old_delta = std::abs(instrument::compute_delta_exposure(
+            *provider, existing_order.symbol, existing_order.leaves_qty));
+        double new_delta = std::abs(instrument::compute_delta_exposure(
+            *provider, update.symbol, update.quantity));
+        return new_delta - old_delta;
+    }
+
     // Extract the key from a NewOrderSingle
     static Key extract_key(const fix::NewOrderSingle& order) {
         if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
@@ -358,7 +371,7 @@ public:
 
     double get(const Key& key) const {
         double total = 0.0;
-        storage_.for_each_stage([&key, &total](const StageData& data) {
+        storage_.for_each_stage([&key, &total](aggregation::OrderStage /*stage*/, const StageData& data) {
             total += data.gross_delta.get(key);
         });
         return total;
@@ -530,6 +543,23 @@ public:
         return (order.side == fix::Side::BID) ? delta_exp : -delta_exp;
     }
 
+    // Compute the net delta contribution for an order update (new - old)
+    static double compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& update,
+        const engine::TrackedOrder& existing_order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        double old_delta = instrument::compute_delta_exposure(
+            *provider, existing_order.symbol, existing_order.leaves_qty);
+        double old_net = (existing_order.side == fix::Side::BID) ? old_delta : -old_delta;
+
+        double new_delta = instrument::compute_delta_exposure(
+            *provider, update.symbol, update.quantity);
+        double new_net = (update.side == fix::Side::BID) ? new_delta : -new_delta;
+
+        return new_net - old_net;
+    }
+
     // Extract the key from a NewOrderSingle
     static Key extract_key(const fix::NewOrderSingle& order) {
         if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
@@ -599,7 +629,7 @@ public:
 
     double get(const Key& key) const {
         double total = 0.0;
-        storage_.for_each_stage([&key, &total](const StageData& data) {
+        storage_.for_each_stage([&key, &total](aggregation::OrderStage /*stage*/, const StageData& data) {
             total += data.net_delta.get(key);
         });
         return total;

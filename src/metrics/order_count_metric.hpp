@@ -51,6 +51,15 @@ public:
         return 1;
     }
 
+    // Order count doesn't change on update, so contribution is 0
+    template<typename Provider>
+    static int64_t compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& /*update*/,
+        const engine::TrackedOrder& /*existing_order*/,
+        const Provider* /*provider*/) {
+        return 0;
+    }
+
     // Extract the key from a NewOrderSingle
     static Key extract_key(const fix::NewOrderSingle& order) {
         if constexpr (std::is_same_v<Key, aggregation::InstrumentSideKey>) {
@@ -236,6 +245,15 @@ public:
         // Returns 1, assuming this might be a new instrument
         // The engine must check if instrument is already quoted
         return 1;
+    }
+
+    // Quoted instrument count doesn't change on update, so contribution is 0
+    template<typename Provider>
+    static int64_t compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& /*update*/,
+        const engine::TrackedOrder& /*existing_order*/,
+        const Provider* /*provider*/) {
+        return 0;
     }
 
     // Extract the key from a NewOrderSingle

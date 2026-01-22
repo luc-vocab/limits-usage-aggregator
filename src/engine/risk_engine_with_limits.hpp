@@ -178,11 +178,53 @@ public:
     // Pre-Trade Check
     // ========================================================================
 
-    // Check if an order would breach any configured limits
+    // Check if a new order would breach any configured limits
     // Returns a structured result with all breaches
     PreTradeCheckResult pre_trade_check(const fix::NewOrderSingle& order) const {
         PreTradeCheckResult result;
         check_all_limits<Metrics...>(order, result);
+        return result;
+    }
+
+    // Check if an order update would breach any configured limits
+    // Returns a structured result with all breaches
+    PreTradeCheckResult pre_trade_check(const fix::OrderCancelReplaceRequest& update) const {
+        PreTradeCheckResult result;
+
+        // Look up the existing order
+        const TrackedOrder* existing = engine_.order_book().get_order(update.orig_key);
+        if (!existing) {
+            // Order not found - can't check limits, but this isn't a breach
+            return result;
+        }
+
+        check_all_update_limits<Metrics...>(update, *existing, result);
+        return result;
+    }
+
+    // Check if a new order would breach a specific metric's limit
+    template<typename Metric>
+    PreTradeCheckResult pre_trade_check_single(const fix::NewOrderSingle& order) const {
+        PreTradeCheckResult result;
+        if constexpr (is_quoted_instrument_metric<Metric>::value) {
+            check_quoted_instrument_limit<Metric>(order, result);
+        } else {
+            check_standard_limit<Metric>(order, result);
+        }
+        return result;
+    }
+
+    // Check if an order update would breach a specific metric's limit
+    template<typename Metric>
+    PreTradeCheckResult pre_trade_check_single(const fix::OrderCancelReplaceRequest& update) const {
+        PreTradeCheckResult result;
+
+        const TrackedOrder* existing = engine_.order_book().get_order(update.orig_key);
+        if (!existing) {
+            return result;
+        }
+
+        check_standard_update_limit<Metric>(update, *existing, result);
         return result;
     }
 
@@ -211,6 +253,22 @@ private:
 
     // Base case for empty pack
     void check_all_limits(const fix::NewOrderSingle&, PreTradeCheckResult&) const {}
+
+    // Recursive helper for order update limit checking
+    template<typename First, typename... Rest>
+    void check_all_update_limits(const fix::OrderCancelReplaceRequest& update,
+                                 const TrackedOrder& existing,
+                                 PreTradeCheckResult& result) const {
+        check_standard_update_limit<First>(update, existing, result);
+        if constexpr (sizeof...(Rest) > 0) {
+            check_all_update_limits<Rest...>(update, existing, result);
+        }
+    }
+
+    // Base case for empty pack
+    void check_all_update_limits(const fix::OrderCancelReplaceRequest&,
+                                 const TrackedOrder&,
+                                 PreTradeCheckResult&) const {}
 
     // Check limit for a single metric
     template<typename Metric>
@@ -251,6 +309,58 @@ private:
                 current,
                 hypothetical
             });
+        }
+    }
+
+    // Standard limit check for order updates with compute_update_contribution
+    template<typename Metric>
+    void check_standard_update_limit(const fix::OrderCancelReplaceRequest& update,
+                                     const TrackedOrder& existing,
+                                     PreTradeCheckResult& result) const {
+        // Extract key from the existing order (not the update request)
+        auto key = extract_key_from_tracked_order<Metric>(existing);
+        auto contribution = Metric::compute_update_contribution(update, existing, get_provider_ptr());
+
+        // Skip if contribution is zero (e.g., order count doesn't change on update)
+        if (contribution == 0) {
+            return;
+        }
+
+        auto current = static_cast<double>(engine_.template get_metric<Metric>().get(key));
+
+        const auto& store = limits_.template get<Metric>();
+        double limit = store.get_limit(key);
+        double hypothetical = current + static_cast<double>(contribution);
+
+        if (store.would_breach(key, current, static_cast<double>(contribution))) {
+            result.add_breach({
+                Metric::limit_type(),
+                detail::key_to_string(key),
+                limit,
+                current,
+                hypothetical
+            });
+        }
+    }
+
+    // Helper to extract metric key from a TrackedOrder
+    template<typename Metric>
+    typename Metric::key_type extract_key_from_tracked_order(const TrackedOrder& order) const {
+        using Key = typename Metric::key_type;
+        if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return aggregation::GlobalKey::instance();
+        } else if constexpr (std::is_same_v<Key, aggregation::UnderlyerKey>) {
+            return Key{order.underlyer};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentKey>) {
+            return Key{order.symbol};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentSideKey>) {
+            return Key{order.symbol, static_cast<int>(order.side)};
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return Key{order.strategy_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return Key{order.portfolio_id};
+        } else {
+            static_assert(sizeof(Key) == 0, "Unsupported key type");
         }
     }
 
