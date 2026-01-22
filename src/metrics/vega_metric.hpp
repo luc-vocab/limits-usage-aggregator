@@ -24,11 +24,12 @@ namespace metrics {
 //
 // Template parameters:
 //   Key: The grouping key type (GlobalKey, UnderlyerKey, etc.)
+//   Context: Provides instrument accessor methods (vega, contract_size, etc.)
 //   Instrument: Must satisfy the vega instrument requirements (vega support)
 //   Stages...: Stage types to track (PositionStage, OpenStage, InFlightStage, or AllStages)
 //
 
-template<typename Key, typename Instrument, typename... Stages>
+template<typename Key, typename Context, typename Instrument, typename... Stages>
 class GrossVegaMetric {
     static_assert(instrument::is_vega_instrument_v<Instrument>,
                   "Instrument must satisfy vega instrument requirements (vega support)");
@@ -37,6 +38,7 @@ public:
     using key_type = Key;
     using value_type = double;
     using instrument_type = Instrument;
+    using context_type = Context;
     using Config = aggregation::StageConfig<Stages...>;
 
     // ========================================================================
@@ -44,24 +46,26 @@ public:
     // ========================================================================
 
     // Compute the gross vega contribution for a new order
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_order_contribution(
         const fix::NewOrderSingle& order,
-        const Inst& instrument) {
-        double vega_exp = instrument::compute_vega_exposure(instrument, order.quantity);
+        const Inst& instrument,
+        const Ctx& context) {
+        double vega_exp = instrument::compute_vega_exposure(context, instrument, order.quantity);
         return std::abs(vega_exp);
     }
 
     // Compute the gross vega contribution for an order update (new - old)
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Inst& instrument) {
+        const Inst& instrument,
+        const Ctx& context) {
         double old_vega = std::abs(instrument::compute_vega_exposure(
-            instrument, existing_order.leaves_qty));
+            context, instrument, existing_order.leaves_qty));
         double new_vega = std::abs(instrument::compute_vega_exposure(
-            instrument, update.quantity));
+            context, instrument, update.quantity));
         return new_vega - old_vega;
     }
 
@@ -100,8 +104,8 @@ private:
 
     Storage storage_;
 
-    static double compute_gross(const Instrument& instrument, int64_t quantity) {
-        double vega_exp = instrument::compute_vega_exposure(instrument, quantity);
+    static double compute_gross(const Context& context, const Instrument& instrument, int64_t quantity) {
+        double vega_exp = instrument::compute_vega_exposure(context, instrument, quantity);
         return std::abs(vega_exp);
     }
 
@@ -146,20 +150,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(instrument, order.leaves_qty);
+        double gross = compute_gross(context, instrument, order.leaves_qty);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->gross_vega.add(key, gross);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(instrument, order.leaves_qty);
+        double gross = compute_gross(context, instrument, order.leaves_qty);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -167,11 +171,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(instrument, old_qty);
-        double new_gross = compute_gross(instrument, order.leaves_qty);
+        double old_gross = compute_gross(context, instrument, old_qty);
+        double new_gross = compute_gross(context, instrument, order.leaves_qty);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -180,10 +184,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(instrument, filled_qty);
+        double filled_gross = compute_gross(context, instrument, filled_qty);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -196,10 +200,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(instrument, filled_qty);
+        double filled_gross = compute_gross(context, instrument, filled_qty);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -207,7 +211,7 @@ public:
         }
     }
 
-    void on_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -216,7 +220,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double gross = compute_gross(instrument, order.leaves_qty);
+            double gross = compute_gross(context, instrument, order.leaves_qty);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -230,14 +234,14 @@ public:
         }
     }
 
-    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(instrument, old_qty);
-        double new_gross = compute_gross(instrument, order.leaves_qty);
+        double old_gross = compute_gross(context, instrument, old_qty);
+        double new_gross = compute_gross(context, instrument, order.leaves_qty);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -265,8 +269,14 @@ public:
 // Tracks only net (signed) vega exposure. Designed for use with the
 // generic limit checking system where each metric has one value type.
 //
+// Template parameters:
+//   Key: The grouping key type (GlobalKey, UnderlyerKey, etc.)
+//   Context: Provides instrument accessor methods (vega, contract_size, etc.)
+//   Instrument: Must satisfy the vega instrument requirements (vega support)
+//   Stages...: Stage types to track (PositionStage, OpenStage, InFlightStage, or AllStages)
+//
 
-template<typename Key, typename Instrument, typename... Stages>
+template<typename Key, typename Context, typename Instrument, typename... Stages>
 class NetVegaMetric {
     static_assert(instrument::is_vega_instrument_v<Instrument>,
                   "Instrument must satisfy vega instrument requirements (vega support)");
@@ -275,6 +285,7 @@ public:
     using key_type = Key;
     using value_type = double;
     using instrument_type = Instrument;
+    using context_type = Context;
     using Config = aggregation::StageConfig<Stages...>;
 
     // ========================================================================
@@ -282,26 +293,28 @@ public:
     // ========================================================================
 
     // Compute the net vega contribution for a new order
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_order_contribution(
         const fix::NewOrderSingle& order,
-        const Inst& instrument) {
-        double vega_exp = instrument::compute_vega_exposure(instrument, order.quantity);
+        const Inst& instrument,
+        const Ctx& context) {
+        double vega_exp = instrument::compute_vega_exposure(context, instrument, order.quantity);
         return (order.side == fix::Side::BID) ? vega_exp : -vega_exp;
     }
 
     // Compute the net vega contribution for an order update (new - old)
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Inst& instrument) {
+        const Inst& instrument,
+        const Ctx& context) {
         double old_vega = instrument::compute_vega_exposure(
-            instrument, existing_order.leaves_qty);
+            context, instrument, existing_order.leaves_qty);
         double old_net = (existing_order.side == fix::Side::BID) ? old_vega : -old_vega;
 
         double new_vega = instrument::compute_vega_exposure(
-            instrument, update.quantity);
+            context, instrument, update.quantity);
         double new_net = (update.side == fix::Side::BID) ? new_vega : -new_vega;
 
         return new_net - old_net;
@@ -342,8 +355,8 @@ private:
 
     Storage storage_;
 
-    static double compute_net(const Instrument& instrument, int64_t quantity, fix::Side side) {
-        double vega_exp = instrument::compute_vega_exposure(instrument, quantity);
+    static double compute_net(const Context& context, const Instrument& instrument, int64_t quantity, fix::Side side) {
+        double vega_exp = instrument::compute_vega_exposure(context, instrument, quantity);
         return (side == fix::Side::BID) ? vega_exp : -vega_exp;
     }
 
@@ -388,20 +401,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(instrument, order.leaves_qty, order.side);
+        double net = compute_net(context, instrument, order.leaves_qty, order.side);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->net_vega.add(key, net);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(instrument, order.leaves_qty, order.side);
+        double net = compute_net(context, instrument, order.leaves_qty, order.side);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -409,11 +422,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(instrument, old_qty, order.side);
-        double new_net = compute_net(instrument, order.leaves_qty, order.side);
+        double old_net = compute_net(context, instrument, old_qty, order.side);
+        double new_net = compute_net(context, instrument, order.leaves_qty, order.side);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -422,10 +435,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(instrument, filled_qty, order.side);
+        double filled_net = compute_net(context, instrument, filled_qty, order.side);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -438,10 +451,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(instrument, filled_qty, order.side);
+        double filled_net = compute_net(context, instrument, filled_qty, order.side);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -449,7 +462,7 @@ public:
         }
     }
 
-    void on_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -458,7 +471,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double net = compute_net(instrument, order.leaves_qty, order.side);
+            double net = compute_net(context, instrument, order.leaves_qty, order.side);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -472,14 +485,14 @@ public:
         }
     }
 
-    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(instrument, old_qty, order.side);
-        double new_net = compute_net(instrument, order.leaves_qty, order.side);
+        double old_net = compute_net(context, instrument, old_qty, order.side);
+        double new_net = compute_net(context, instrument, order.leaves_qty, order.side);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -504,17 +517,17 @@ public:
 // Type aliases for Gross/Net vega metrics
 // ============================================================================
 
-template<typename Instrument, typename... Stages>
-using GlobalGrossVegaMetric = GrossVegaMetric<aggregation::GlobalKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalGrossVegaMetric = GrossVegaMetric<aggregation::GlobalKey, Context, Instrument, Stages...>;
 
-template<typename Instrument, typename... Stages>
-using UnderlyerGrossVegaMetric = GrossVegaMetric<aggregation::UnderlyerKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using UnderlyerGrossVegaMetric = GrossVegaMetric<aggregation::UnderlyerKey, Context, Instrument, Stages...>;
 
-template<typename Instrument, typename... Stages>
-using GlobalNetVegaMetric = NetVegaMetric<aggregation::GlobalKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalNetVegaMetric = NetVegaMetric<aggregation::GlobalKey, Context, Instrument, Stages...>;
 
-template<typename Instrument, typename... Stages>
-using UnderlyerNetVegaMetric = NetVegaMetric<aggregation::UnderlyerKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using UnderlyerNetVegaMetric = NetVegaMetric<aggregation::UnderlyerKey, Context, Instrument, Stages...>;
 
 } // namespace metrics
 

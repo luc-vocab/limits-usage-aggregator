@@ -108,20 +108,18 @@ OrderCancelRequest create_cancel_request(const std::string& cancel_id, const std
 class OrderCountByInstrumentSideTest : public ::testing::Test {
 protected:
     // Define the engine with single-purpose metrics
-    // NullInstrument is used because order count metrics don't need instrument data
+    // void is used because order count metrics don't need context or instrument data
     using OpenOrderCount = OrderCountMetric<InstrumentSideKey, OpenStage>;
     using InFlightOrderCount = OrderCountMetric<InstrumentSideKey, InFlightStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        NullInstrument,
+        void,
+        void,
         OpenOrderCount,
         InFlightOrderCount
     >;
 
     TestEngine engine;
-
-    // Singleton null instrument for all operations
-    const NullInstrument& null_inst = NullInstrument::instance();
 
     // Limits
     static constexpr int64_t MAX_OPEN_PER_SIDE = 1;
@@ -149,7 +147,7 @@ TEST_F(OrderCountByInstrumentSideTest, SingleOrderLifecycle) {
     const std::string SYMBOL = "AAPL";
 
     // Step 1: Send order
-    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100));
 
     // Assert: in-flight=1, open=0
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 1);
@@ -158,21 +156,21 @@ TEST_F(OrderCountByInstrumentSideTest, SingleOrderLifecycle) {
     EXPECT_EQ(open_count(SYMBOL, Side::ASK), 0);
 
     // Step 2: Receive ACK
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     // Assert: in-flight=0, open=1
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 0);
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 1);
 
     // Step 3: Request cancel
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", SYMBOL, Side::BID), null_inst);
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", SYMBOL, Side::BID));
 
     // Assert: order moves to in-flight (pending cancel)
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 1);
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 0);
 
     // Step 4: Cancel ACK
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"), null_inst);
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"));
 
     // Assert: all counts back to 0
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 0);
@@ -184,43 +182,43 @@ TEST_F(OrderCountByInstrumentSideTest, LimitEnforcement) {
 
     // Step 1: Check pre-trade for first order (BID)
     auto order1 = create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100);
-    auto result1 = engine.pre_trade_check(order1, null_inst);
+    auto result1 = engine.pre_trade_check(order1);
     EXPECT_FALSE(result1.would_breach) << result1.to_string();
-    engine.on_new_order_single(order1, null_inst);
+    engine.on_new_order_single(order1);
 
     // Assert: would breach limit for new BID order
     auto order2 = create_order("ORD002", SYMBOL, SYMBOL, Side::BID, 150.0, 100);
-    auto result2 = engine.pre_trade_check(order2, null_inst);
+    auto result2 = engine.pre_trade_check(order2);
     EXPECT_TRUE(result2.would_breach) << "BID should be at limit";
     EXPECT_TRUE(result2.has_breach(LimitType::ORDER_COUNT));
 
     // ASK still available
     auto ask_order = create_order("ORD003", SYMBOL, SYMBOL, Side::ASK, 151.0, 50);
-    auto ask_result = engine.pre_trade_check(ask_order, null_inst);
+    auto ask_result = engine.pre_trade_check(ask_order);
     EXPECT_FALSE(ask_result.would_breach) << ask_result.to_string();
 
     // Step 2: ACK first order
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     // Assert: still at limit (open=1)
-    auto result3 = engine.pre_trade_check(order2, null_inst);
+    auto result3 = engine.pre_trade_check(order2);
     EXPECT_TRUE(result3.would_breach) << "BID should still be at limit after ACK";
 
     // Step 3: Send ASK order (should be allowed)
-    EXPECT_FALSE(engine.pre_trade_check(ask_order, null_inst).would_breach);
-    engine.on_new_order_single(ask_order, null_inst);
+    EXPECT_FALSE(engine.pre_trade_check(ask_order).would_breach);
+    engine.on_new_order_single(ask_order);
 
     // Assert: ASK now at limit
     auto ask_order2 = create_order("ORD004", SYMBOL, SYMBOL, Side::ASK, 151.0, 50);
-    EXPECT_TRUE(engine.pre_trade_check(ask_order2, null_inst).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(ask_order2).would_breach);
     EXPECT_EQ(in_flight_count(SYMBOL, Side::ASK), 1);
 }
 
 TEST_F(OrderCountByInstrumentSideTest, MultipleInstruments) {
     // Each instrument has independent limits
-    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100), null_inst);
-    engine.on_new_order_single(create_order("ORD002", "MSFT", "MSFT", Side::BID, 300.0, 50), null_inst);
-    engine.on_new_order_single(create_order("ORD003", "GOOG", "GOOG", Side::BID, 100.0, 200), null_inst);
+    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100));
+    engine.on_new_order_single(create_order("ORD002", "MSFT", "MSFT", Side::BID, 300.0, 50));
+    engine.on_new_order_single(create_order("ORD003", "GOOG", "GOOG", Side::BID, 100.0, 200));
 
     // Assert: each instrument has 1 in-flight BID
     EXPECT_EQ(in_flight_count("AAPL", Side::BID), 1);
@@ -228,10 +226,10 @@ TEST_F(OrderCountByInstrumentSideTest, MultipleInstruments) {
     EXPECT_EQ(in_flight_count("GOOG", Side::BID), 1);
 
     // Assert: limits are per-instrument
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "AAPL", "AAPL", Side::BID, 150.0, 100), null_inst).would_breach);
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "MSFT", "MSFT", Side::BID, 300.0, 50), null_inst).would_breach);
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "GOOG", "GOOG", Side::BID, 100.0, 200), null_inst).would_breach);
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", "AAPL", "AAPL", Side::ASK, 150.0, 100), null_inst).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "AAPL", "AAPL", Side::BID, 150.0, 100)).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "MSFT", "MSFT", Side::BID, 300.0, 50)).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", "GOOG", "GOOG", Side::BID, 100.0, 200)).would_breach);
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", "AAPL", "AAPL", Side::ASK, 150.0, 100)).would_breach);
 }
 
 TEST_F(OrderCountByInstrumentSideTest, NackFreesCapacity) {
@@ -239,14 +237,14 @@ TEST_F(OrderCountByInstrumentSideTest, NackFreesCapacity) {
 
     // Send order
     auto order = create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100);
-    engine.on_new_order_single(order, null_inst);
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach);
+    engine.on_new_order_single(order);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach);
 
     // Receive NACK
-    engine.on_execution_report(create_nack("ORD001"), null_inst);
+    engine.on_execution_report(create_nack("ORD001"));
 
     // Assert: capacity freed
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach);
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach);
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 0);
 }
 
@@ -254,73 +252,73 @@ TEST_F(OrderCountByInstrumentSideTest, FillRemovesFromOpen) {
     const std::string SYMBOL = "AAPL";
 
     // Send and ACK order
-    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 1);
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach);
 
     // Partial fill - order stays in OPEN
-    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0));
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 1);  // Still open
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach);
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach);
 
     // Full fill - order removed
-    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0));
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 0);
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach);
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach);
 }
 
 TEST_F(OrderCountByInstrumentSideTest, FullOrderFlowWithAssertions) {
     const std::string SYMBOL = "AAPL";
 
     // Step 1: Send BID order
-    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 1) << "After INSERT BID";
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 0) << "After INSERT BID";
 
     // Step 2: Send ASK order
-    engine.on_new_order_single(create_order("ORD002", SYMBOL, SYMBOL, Side::ASK, 151.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD002", SYMBOL, SYMBOL, Side::ASK, 151.0, 100));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::ASK), 1) << "After INSERT ASK";
     EXPECT_EQ(open_count(SYMBOL, Side::ASK), 0) << "After INSERT ASK";
 
     // Step 3: ACK BID
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD001", 100));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::BID), 0) << "After ACK BID";
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 1) << "After ACK BID";
 
     // Step 4: ACK ASK
-    engine.on_execution_report(create_ack("ORD002", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD002", 100));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::ASK), 0) << "After ACK ASK";
     EXPECT_EQ(open_count(SYMBOL, Side::ASK), 1) << "After ACK ASK";
 
     // Both sides at limit
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach)
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach)
         << "BID at limit";
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::ASK, 151.0, 100), null_inst).would_breach)
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::ASK, 151.0, 100)).would_breach)
         << "ASK at limit";
 
     // Step 5: Full fill on BID
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0));
     EXPECT_EQ(open_count(SYMBOL, Side::BID), 0) << "After FILL BID";
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst).would_breach)
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::BID, 150.0, 100)).would_breach)
         << "BID capacity freed";
 
     // Step 6: Cancel ASK
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", SYMBOL, Side::ASK), null_inst);
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", SYMBOL, Side::ASK));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::ASK), 1) << "After CANCEL_REQ ASK";
     EXPECT_EQ(open_count(SYMBOL, Side::ASK), 0) << "After CANCEL_REQ ASK";
 
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"), null_inst);
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"));
     EXPECT_EQ(in_flight_count(SYMBOL, Side::ASK), 0) << "After CANCEL_ACK ASK";
     EXPECT_EQ(open_count(SYMBOL, Side::ASK), 0) << "After CANCEL_ACK ASK";
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::ASK, 151.0, 100), null_inst).would_breach)
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", SYMBOL, SYMBOL, Side::ASK, 151.0, 100)).would_breach)
         << "ASK capacity freed";
 }
 
 TEST_F(OrderCountByInstrumentSideTest, Clear) {
-    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     EXPECT_EQ(open_count("AAPL", Side::BID), 1);
 
@@ -334,10 +332,10 @@ TEST_F(OrderCountByInstrumentSideTest, PreTradeCheckResultToString) {
     const std::string SYMBOL = "AAPL";
 
     // Send order to hit limit
-    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", SYMBOL, SYMBOL, Side::BID, 150.0, 100));
 
     // Check pre-trade for new order
-    auto result = engine.pre_trade_check(create_order("ORD002", SYMBOL, SYMBOL, Side::BID, 150.0, 100), null_inst);
+    auto result = engine.pre_trade_check(create_order("ORD002", SYMBOL, SYMBOL, Side::BID, 150.0, 100));
     EXPECT_TRUE(result.would_breach);
     EXPECT_EQ(result.breaches.size(), 1u);
 

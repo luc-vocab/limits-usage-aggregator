@@ -44,11 +44,34 @@ public:
     // ========================================================================
 
     // Returns 1 for each new order (order count contribution is always 1)
+    // Overload without instrument (for void specialization)
+    static int64_t compute_order_contribution(const fix::NewOrderSingle& /*order*/) {
+        return 1;
+    }
+
+    // Returns 1 for each new order (order count contribution is always 1)
     template<typename Instrument>
     static int64_t compute_order_contribution(
         const fix::NewOrderSingle& /*order*/,
         const Instrument& /*instrument*/) {
         return 1;
+    }
+
+    // Overload with context (for non-void specialization)
+    template<typename Ctx, typename Inst>
+    static int64_t compute_order_contribution(
+        const fix::NewOrderSingle& /*order*/,
+        const Inst& /*instrument*/,
+        const Ctx& /*context*/) {
+        return 1;
+    }
+
+    // Order count doesn't change on update, so contribution is 0
+    // Overload without instrument or context (for void specialization)
+    static int64_t compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& /*update*/,
+        const engine::TrackedOrder& /*existing_order*/) {
+        return 0;
     }
 
     // Order count doesn't change on update, so contribution is 0
@@ -57,6 +80,17 @@ public:
         const fix::OrderCancelReplaceRequest& /*update*/,
         const engine::TrackedOrder& /*existing_order*/,
         const Instrument& /*instrument*/) {
+        return 0;
+    }
+
+    // Order count doesn't change on update, so contribution is 0
+    // Overload with context (for non-void specialization)
+    template<typename Inst, typename Ctx>
+    static int64_t compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& /*update*/,
+        const engine::TrackedOrder& /*existing_order*/,
+        const Inst& /*instrument*/,
+        const Ctx& /*context*/) {
         return 0;
     }
 
@@ -176,9 +210,8 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    template<typename Instrument>
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
-        // New orders always start in IN_FLIGHT stage
+    // Overloads without instrument (for void specialization)
+    void on_order_added(const engine::TrackedOrder& order) {
         if constexpr (Config::track_in_flight) {
             if (aggregation::KeyExtractor<Key>::is_applicable(order)) {
                 Key key = aggregation::KeyExtractor<Key>::extract(order);
@@ -187,12 +220,10 @@ public:
         }
     }
 
-    template<typename Instrument>
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+    void on_order_removed(const engine::TrackedOrder& order) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) {
             return;
         }
-
         Key key = aggregation::KeyExtractor<Key>::extract(order);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* bucket = storage_.get_stage(stage);
@@ -201,42 +232,32 @@ public:
         }
     }
 
-    template<typename Instrument>
-    void on_order_updated(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*old_qty*/) {
+    void on_order_updated(const engine::TrackedOrder& /*order*/, int64_t /*old_qty*/) {
         // Order count doesn't change on quantity update
     }
 
-    template<typename Instrument>
-    void on_partial_fill(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*filled_qty*/) {
+    void on_partial_fill(const engine::TrackedOrder& /*order*/, int64_t /*filled_qty*/) {
         // Order count doesn't change on partial fill
     }
 
-    template<typename Instrument>
-    void on_full_fill(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*filled_qty*/) {
+    void on_full_fill(const engine::TrackedOrder& /*order*/, int64_t /*filled_qty*/) {
         // Order count change handled by on_order_removed
     }
 
-    template<typename Instrument>
-    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+    void on_state_change(const engine::TrackedOrder& order,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) {
             return;
         }
-
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
-
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = aggregation::KeyExtractor<Key>::extract(order);
-
-            // Remove from old stage
             auto* old_bucket = storage_.get_stage(old_stage);
             if (old_bucket) {
                 old_bucket->remove(key, 1);
             }
-
-            // Add to new stage
             auto* new_bucket = storage_.get_stage(new_stage);
             if (new_bucket) {
                 new_bucket->add(key, 1);
@@ -244,12 +265,93 @@ public:
         }
     }
 
-    template<typename Instrument>
-    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order,
                                              int64_t /*old_qty*/,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
-        on_state_change(order, instrument, old_state, new_state);
+        on_state_change(order, old_state, new_state);
+    }
+
+    // Overloads with instrument (for non-void specialization without context)
+    template<typename Instrument>
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+        on_order_added(order);
+    }
+
+    template<typename Instrument>
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+        on_order_removed(order);
+    }
+
+    template<typename Instrument>
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t old_qty) {
+        on_order_updated(order, old_qty);
+    }
+
+    template<typename Instrument>
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t filled_qty) {
+        on_partial_fill(order, filled_qty);
+    }
+
+    template<typename Instrument>
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t filled_qty) {
+        on_full_fill(order, filled_qty);
+    }
+
+    template<typename Instrument>
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        on_state_change(order, old_state, new_state);
+    }
+
+    template<typename Instrument>
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        on_order_updated_with_state_change(order, old_qty, old_state, new_state);
+    }
+
+    // Overloads with instrument and context (for non-void specialization with context)
+    template<typename Instrument, typename Context>
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/) {
+        on_order_added(order);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/) {
+        on_order_removed(order);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t old_qty) {
+        on_order_updated(order, old_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t filled_qty) {
+        on_partial_fill(order, filled_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t filled_qty) {
+        on_full_fill(order, filled_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        on_state_change(order, old_state, new_state);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        on_order_updated_with_state_change(order, old_qty, old_state, new_state);
     }
 
     void clear() {
@@ -283,6 +385,13 @@ public:
 
     // Returns 1 for a new instrument on this underlyer (assumes it's new)
     // The caller must check if the instrument is already quoted
+    // Overload without instrument (for void specialization)
+    static int64_t compute_order_contribution(const fix::NewOrderSingle& /*order*/) {
+        return 1;
+    }
+
+    // Returns 1 for a new instrument on this underlyer (assumes it's new)
+    // The caller must check if the instrument is already quoted
     template<typename Instrument>
     static int64_t compute_order_contribution(
         const fix::NewOrderSingle& /*order*/,
@@ -290,6 +399,14 @@ public:
         // Returns 1, assuming this might be a new instrument
         // The engine must check if instrument is already quoted
         return 1;
+    }
+
+    // Quoted instrument count doesn't change on update, so contribution is 0
+    // Overload without instrument (for void specialization)
+    static int64_t compute_update_contribution(
+        const fix::OrderCancelReplaceRequest& /*update*/,
+        const engine::TrackedOrder& /*existing_order*/) {
+        return 0;
     }
 
     // Quoted instrument count doesn't change on update, so contribution is 0
@@ -441,23 +558,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    template<typename Instrument>
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
-        // New orders always start in IN_FLIGHT stage
+    // Overloads without instrument (for void specialization)
+    void on_order_added(const engine::TrackedOrder& order) {
         if constexpr (Config::track_in_flight) {
             storage_.in_flight().add(order.symbol, order.underlyer);
         }
         order_count_per_instrument_[order.symbol]++;
     }
 
-    template<typename Instrument>
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+    void on_order_removed(const engine::TrackedOrder& order) {
         auto it = order_count_per_instrument_.find(order.symbol);
         if (it != order_count_per_instrument_.end()) {
             it->second--;
             if (it->second <= 0) {
                 order_count_per_instrument_.erase(it);
-                // Only remove from stage when last order on this instrument is removed
                 auto stage = aggregation::stage_from_order_state(order.state);
                 auto* stage_data = storage_.get_stage(stage);
                 if (stage_data) {
@@ -467,32 +581,26 @@ public:
         }
     }
 
-    template<typename Instrument>
-    void on_order_updated(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*old_qty*/) {
+    void on_order_updated(const engine::TrackedOrder& /*order*/, int64_t /*old_qty*/) {
         // Quoted instrument count doesn't change on quantity update
     }
 
-    template<typename Instrument>
-    void on_partial_fill(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*filled_qty*/) {
+    void on_partial_fill(const engine::TrackedOrder& /*order*/, int64_t /*filled_qty*/) {
         // Quoted instrument count doesn't change on partial fill
     }
 
-    template<typename Instrument>
-    void on_full_fill(const engine::TrackedOrder& /*order*/, const Instrument& /*instrument*/, int64_t /*filled_qty*/) {
+    void on_full_fill(const engine::TrackedOrder& /*order*/, int64_t /*filled_qty*/) {
         // Handled by on_order_removed
     }
 
-    template<typename Instrument>
-    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+    void on_state_change(const engine::TrackedOrder& order,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
-
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             auto* old_stage_data = storage_.get_stage(old_stage);
             auto* new_stage_data = storage_.get_stage(new_stage);
-
             if (old_stage_data) {
                 old_stage_data->remove(order.symbol, order.underlyer);
             }
@@ -502,12 +610,93 @@ public:
         }
     }
 
-    template<typename Instrument>
-    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& instrument,
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order,
                                              int64_t /*old_qty*/,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
-        on_state_change(order, instrument, old_state, new_state);
+        on_state_change(order, old_state, new_state);
+    }
+
+    // Overloads with instrument (for non-void specialization without context)
+    template<typename Instrument>
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+        on_order_added(order);
+    }
+
+    template<typename Instrument>
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/) {
+        on_order_removed(order);
+    }
+
+    template<typename Instrument>
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t old_qty) {
+        on_order_updated(order, old_qty);
+    }
+
+    template<typename Instrument>
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t filled_qty) {
+        on_partial_fill(order, filled_qty);
+    }
+
+    template<typename Instrument>
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, int64_t filled_qty) {
+        on_full_fill(order, filled_qty);
+    }
+
+    template<typename Instrument>
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        on_state_change(order, old_state, new_state);
+    }
+
+    template<typename Instrument>
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        on_order_updated_with_state_change(order, old_qty, old_state, new_state);
+    }
+
+    // Overloads with instrument and context (for non-void specialization with context)
+    template<typename Instrument, typename Context>
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/) {
+        on_order_added(order);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/) {
+        on_order_removed(order);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t old_qty) {
+        on_order_updated(order, old_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t filled_qty) {
+        on_partial_fill(order, filled_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/, int64_t filled_qty) {
+        on_full_fill(order, filled_qty);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state) {
+        on_state_change(order, old_state, new_state);
+    }
+
+    template<typename Instrument, typename Context>
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order, const Instrument& /*instrument*/, const Context& /*context*/,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state) {
+        on_order_updated_with_state_change(order, old_qty, old_state, new_state);
     }
 
     void clear() {

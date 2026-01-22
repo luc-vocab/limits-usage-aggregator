@@ -122,16 +122,14 @@ protected:
     using OpenQuotedInstruments = QuotedInstrumentCountMetric<OpenStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        NullInstrument,  // No provider needed for order count metrics
+        void,  // No context needed for order count metrics
+        void,  // No instrument needed for order count metrics
         OpenOrdersPerSide,
         InFlightOrdersPerSide,
         OpenQuotedInstruments
     >;
 
     TestEngine engine;
-
-    // Singleton null instrument for all operations
-    const NullInstrument& null_inst = NullInstrument::instance();
 
     // Limits
     static constexpr int64_t MAX_OPEN_PER_SIDE = 1;
@@ -197,58 +195,58 @@ TEST_F(OptionUnderlyerRefactoredTest, FullLifecycleWithExplicitAssertions) {
     assert_state({OPT1, AAPL, 0, 0, 0, 0, 0}, "Initial");
 
     // Step 1: INSERT ORD001 (OPT1, BID)
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
     // in_flight_bid=1, quoted=0 (only counts open stage)
     assert_state({OPT1, AAPL, 0, 0, 1, 0, 0}, "Step 1: INSERT ORD001");
 
     // Step 2: ACK ORD001
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD001", 100));
     // open_bid=1, in_flight_bid=0, quoted=1
     assert_state({OPT1, AAPL, 1, 0, 0, 0, 1}, "Step 2: ACK ORD001");
 
     // Step 3: INSERT ORD002 (OPT1, ASK)
-    engine.on_new_order_single(create_order("ORD002", OPT1, AAPL, Side::ASK, 5.5, 50), null_inst);
+    engine.on_new_order_single(create_order("ORD002", OPT1, AAPL, Side::ASK, 5.5, 50));
     // in_flight_ask=1, quoted still 1
     assert_state({OPT1, AAPL, 1, 0, 0, 1, 1}, "Step 3: INSERT ORD002");
 
     // Step 4: ACK ORD002
-    engine.on_execution_report(create_ack("ORD002", 50), null_inst);
+    engine.on_execution_report(create_ack("ORD002", 50));
     // open_ask=1, in_flight_ask=0, quoted still 1 (same instrument)
     assert_state({OPT1, AAPL, 1, 1, 0, 0, 1}, "Step 4: ACK ORD002");
 
     // Step 5: INSERT ORD003 (OPT2, BID) - new instrument
-    engine.on_new_order_single(create_order("ORD003", OPT2, AAPL, Side::BID, 3.0, 75), null_inst);
+    engine.on_new_order_single(create_order("ORD003", OPT2, AAPL, Side::BID, 3.0, 75));
     // OPT2: in_flight_bid=1, quoted still 1 (only counts open)
     EXPECT_EQ(in_flight_orders(OPT2, Side::BID), 1) << "Step 5: in_flight_bid for OPT2";
     EXPECT_EQ(quoted_instruments(AAPL), 1) << "Step 5: quoted_instruments for AAPL";
 
     // Step 6: ACK ORD003
-    engine.on_execution_report(create_ack("ORD003", 75), null_inst);
+    engine.on_execution_report(create_ack("ORD003", 75));
     // OPT2: open_bid=1, quoted now 2
     EXPECT_EQ(open_orders(OPT2, Side::BID), 1) << "Step 6: open_bid for OPT2";
     EXPECT_EQ(quoted_instruments(AAPL), 2) << "Step 6: quoted_instruments for AAPL";
 
     // Step 7: PARTIAL_FILL ORD001 (doesn't change counts)
-    engine.on_execution_report(create_fill("ORD001", 50, 50, 5.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 50, 50, 5.0));
     assert_state({OPT1, AAPL, 1, 1, 0, 0, 2}, "Step 7: PARTIAL_FILL ORD001");
 
     // Step 8: FULL_FILL ORD001
-    engine.on_execution_report(create_fill("ORD001", 50, 0, 5.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 50, 0, 5.0));
     // OPT1: open_bid=0, quoted still 2 (OPT1 still has ASK, OPT2 has BID)
     assert_state({OPT1, AAPL, 0, 1, 0, 0, 2}, "Step 8: FULL_FILL ORD001");
 
     // Step 9: CANCEL_REQUEST ORD002
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", OPT1, Side::ASK), null_inst);
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", OPT1, Side::ASK));
     // OPT1: open_ask=0, in_flight_ask=1, quoted drops to 1 (OPT1 has no open orders, only OPT2 open)
     assert_state({OPT1, AAPL, 0, 0, 0, 1, 1}, "Step 9: CANCEL_REQUEST ORD002");
 
     // Step 10: CANCEL_ACK ORD002
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"), null_inst);
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"));
     // OPT1: all zeros, quoted now 1 (only OPT2 remains)
     assert_state({OPT1, AAPL, 0, 0, 0, 0, 1}, "Step 10: CANCEL_ACK ORD002");
 
     // Step 11: UNSOLICITED_CANCEL ORD003
-    engine.on_execution_report(create_unsolicited_cancel("ORD003"), null_inst);
+    engine.on_execution_report(create_unsolicited_cancel("ORD003"));
     // All orders gone, quoted=0
     EXPECT_EQ(open_orders(OPT2, Side::BID), 0) << "Step 11: open_bid for OPT2";
     EXPECT_EQ(quoted_instruments(AAPL), 0) << "Step 11: quoted_instruments for AAPL";
@@ -266,34 +264,34 @@ TEST_F(OptionUnderlyerRefactoredTest, LimitEnforcement) {
 
     // Step 1: INSERT & ACK OPT1 BID
     auto order1 = create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100);
-    engine.on_new_order_single(order1, null_inst);
+    engine.on_new_order_single(order1);
     // After INSERT, order is in-flight, which counts towards the order count limit
-    auto check1 = engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
+    auto check1 = engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100));
     EXPECT_TRUE(check1.would_breach) << "After INSERT, in-flight counts towards limit";
     EXPECT_TRUE(check1.has_breach(LimitType::ORDER_COUNT));
 
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     // OPT1 BID now at limit (1 open)
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100), null_inst).would_breach)
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100)).would_breach)
         << "OPT1 BID at limit";
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::ASK, 5.0, 100), null_inst).would_breach)
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::ASK, 5.0, 100)).would_breach)
         << "OPT1 ASK not at limit";
-    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::BID, 6.0, 50), null_inst).would_breach)
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::BID, 6.0, 50)).would_breach)
         << "OPT2 BID not at limit";
 
     // Step 2: INSERT & ACK OPT2 ASK
-    engine.on_new_order_single(create_order("ORD002", OPT2, AAPL, Side::ASK, 6.0, 50), null_inst);
-    engine.on_execution_report(create_ack("ORD002", 50), null_inst);
+    engine.on_new_order_single(create_order("ORD002", OPT2, AAPL, Side::ASK, 6.0, 50));
+    engine.on_execution_report(create_ack("ORD002", 50));
 
     // OPT2 ASK now at limit, quoted=2
-    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::ASK, 6.0, 50), null_inst).would_breach)
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::ASK, 6.0, 50)).would_breach)
         << "OPT2 ASK at limit";
     EXPECT_EQ(quoted_instruments(AAPL), 2) << "Quoted instruments = 2";
 
     // Step 3: Try to INSERT OPT3 - would breach quoted instruments limit
     auto opt3_order = create_order("ORD003", OPT3, AAPL, Side::BID, 4.0, 100);
-    auto check3 = engine.pre_trade_check(opt3_order, null_inst);
+    auto check3 = engine.pre_trade_check(opt3_order);
     // OPT3 doesn't have an order count breach (per-side is free)
     // But it would breach quoted instruments limit
     EXPECT_TRUE(check3.would_breach) << "OPT3 should breach quoted instruments limit";
@@ -309,12 +307,12 @@ TEST_F(OptionUnderlyerRefactoredTest, NackReleasesResources) {
     const std::string AAPL = "AAPL";
 
     // INSERT
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
     EXPECT_EQ(in_flight_orders(OPT1, Side::BID), 1) << "After INSERT: in_flight=1";
     EXPECT_EQ(quoted_instruments(AAPL), 0) << "After INSERT: quoted=0 (not open yet)";
 
     // NACK
-    engine.on_execution_report(create_nack("ORD001"), null_inst);
+    engine.on_execution_report(create_nack("ORD001"));
     EXPECT_EQ(in_flight_orders(OPT1, Side::BID), 0) << "After NACK: in_flight=0";
     EXPECT_EQ(open_orders(OPT1, Side::BID), 0) << "After NACK: open=0";
     EXPECT_EQ(quoted_instruments(AAPL), 0) << "After NACK: quoted=0";
@@ -331,24 +329,24 @@ TEST_F(OptionUnderlyerRefactoredTest, MultipleUnderlyersIndependent) {
     const std::string MSFT = "MSFT";
 
     // AAPL order
-    engine.on_new_order_single(create_order("ORD001", AAPL_OPT, AAPL, Side::BID, 5.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", AAPL_OPT, AAPL, Side::BID, 5.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     EXPECT_EQ(open_orders(AAPL_OPT, Side::BID), 1);
     EXPECT_EQ(quoted_instruments(AAPL), 1);
     EXPECT_EQ(quoted_instruments(MSFT), 0);
 
     // MSFT order
-    engine.on_new_order_single(create_order("ORD002", MSFT_OPT, MSFT, Side::ASK, 10.0, 50), null_inst);
-    engine.on_execution_report(create_ack("ORD002", 50), null_inst);
+    engine.on_new_order_single(create_order("ORD002", MSFT_OPT, MSFT, Side::ASK, 10.0, 50));
+    engine.on_execution_report(create_ack("ORD002", 50));
 
     EXPECT_EQ(open_orders(MSFT_OPT, Side::ASK), 1);
     EXPECT_EQ(quoted_instruments(AAPL), 1);
     EXPECT_EQ(quoted_instruments(MSFT), 1);
 
     // Cancel AAPL - doesn't affect MSFT
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", AAPL_OPT, Side::BID), null_inst);
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"), null_inst);
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", AAPL_OPT, Side::BID));
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"));
 
     EXPECT_EQ(quoted_instruments(AAPL), 0);
     EXPECT_EQ(quoted_instruments(MSFT), 1);
@@ -363,29 +361,29 @@ TEST_F(OptionUnderlyerRefactoredTest, SameInstrumentMultipleOrders) {
     const std::string AAPL = "AAPL";
 
     // First order on OPT1
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);
     EXPECT_EQ(quoted_instruments(AAPL), 1);
 
     // Second order on SAME instrument (ASK side)
-    engine.on_new_order_single(create_order("ORD002", OPT1, AAPL, Side::ASK, 5.5, 50), null_inst);
-    engine.on_execution_report(create_ack("ORD002", 50), null_inst);
+    engine.on_new_order_single(create_order("ORD002", OPT1, AAPL, Side::ASK, 5.5, 50));
+    engine.on_execution_report(create_ack("ORD002", 50));
 
     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);
     EXPECT_EQ(open_orders(OPT1, Side::ASK), 1);
     EXPECT_EQ(quoted_instruments(AAPL), 1) << "Still 1 - same instrument";
 
     // Fill BID order
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 5.0), null_inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 5.0));
 
     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);
     EXPECT_EQ(open_orders(OPT1, Side::ASK), 1);
     EXPECT_EQ(quoted_instruments(AAPL), 1) << "Still 1 - ASK still open";
 
     // Fill ASK order
-    engine.on_execution_report(create_fill("ORD002", 50, 0, 5.5), null_inst);
+    engine.on_execution_report(create_fill("ORD002", 50, 0, 5.5));
 
     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);
     EXPECT_EQ(open_orders(OPT1, Side::ASK), 0);
@@ -402,9 +400,9 @@ TEST_F(OptionUnderlyerRefactoredTest, ClearResetsAll) {
     const std::string AAPL = "AAPL";
 
     // Add some orders
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
-    engine.on_new_order_single(create_order("ORD002", OPT2, AAPL, Side::ASK, 6.0, 50), null_inst);
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
+    engine.on_new_order_single(create_order("ORD002", OPT2, AAPL, Side::ASK, 6.0, 50));
 
     EXPECT_EQ(open_orders(OPT1, Side::BID), 1);
     EXPECT_EQ(in_flight_orders(OPT2, Side::ASK), 1);
@@ -427,11 +425,11 @@ TEST_F(OptionUnderlyerRefactoredTest, PreTradeCheckResultDetails) {
     const std::string AAPL = "AAPL";
 
     // Send order to hit limit
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
-    engine.on_execution_report(create_ack("ORD001", 100), null_inst);
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
 
     // Check pre-trade for new order on same instrument-side
-    auto result = engine.pre_trade_check(create_order("ORD002", OPT1, AAPL, Side::BID, 5.0, 100), null_inst);
+    auto result = engine.pre_trade_check(create_order("ORD002", OPT1, AAPL, Side::BID, 5.0, 100));
     EXPECT_TRUE(result.would_breach);
     EXPECT_FALSE(result);  // operator bool returns !would_breach
 

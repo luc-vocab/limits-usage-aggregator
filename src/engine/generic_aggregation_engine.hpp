@@ -30,24 +30,25 @@ template<typename T>
 inline constexpr bool has_set_instrument_position_v = has_set_instrument_position<T>::value;
 
 // ============================================================================
-// Type trait: has_set_instrument_position_with_instrument
+// Type trait: has_set_instrument_position_with_instrument_and_context
 // ============================================================================
 //
-// Detects if a metric type has a set_instrument_position(symbol, qty, instrument) method (3-param)
+// Detects if a metric type has a set_instrument_position(symbol, qty, instrument, context) method (4-param)
 //
 
-template<typename T, typename Instrument, typename = void>
-struct has_set_instrument_position_with_instrument : std::false_type {};
+template<typename T, typename Instrument, typename Context, typename = void>
+struct has_set_instrument_position_with_instrument_and_context : std::false_type {};
 
-template<typename T, typename Instrument>
-struct has_set_instrument_position_with_instrument<T, Instrument,
+template<typename T, typename Instrument, typename Context>
+struct has_set_instrument_position_with_instrument_and_context<T, Instrument, Context,
     std::void_t<decltype(std::declval<T>().set_instrument_position(
-        std::declval<std::string>(), std::declval<int64_t>(), std::declval<Instrument>()))>
+        std::declval<std::string>(), std::declval<int64_t>(),
+        std::declval<Instrument>(), std::declval<Context>()))>
 > : std::true_type {};
 
-template<typename T, typename Instrument>
-inline constexpr bool has_set_instrument_position_with_instrument_v =
-    has_set_instrument_position_with_instrument<T, Instrument>::value;
+template<typename T, typename Instrument, typename Context>
+inline constexpr bool has_set_instrument_position_with_instrument_and_context_v =
+    has_set_instrument_position_with_instrument_and_context<T, Instrument, Context>::value;
 
 // ============================================================================
 // GenericRiskAggregationEngine - Template-based aggregation engine
@@ -55,6 +56,7 @@ inline constexpr bool has_set_instrument_position_with_instrument_v =
 //
 // A generic engine that processes FIX messages and maintains real-time
 // aggregate metrics. The engine is parameterized on:
+//   - ContextType: Provides accessor methods for instrument data (spot_price, fx_rate, etc.)
 //   - Instrument: The instrument data type (must satisfy is_instrument)
 //   - Metrics...: Zero or more metric types
 //
@@ -63,12 +65,14 @@ inline constexpr bool has_set_instrument_position_with_instrument_v =
 //
 // Example usage:
 //
+//   using Context = MyContext;
 //   using Instrument = instrument::InstrumentData;
-//   using MyEngine = GenericRiskAggregationEngine<Instrument,
-//       metrics::DeltaMetric<aggregation::UnderlyerKey, Instrument>,
-//       metrics::NotionalMetric<aggregation::GlobalKey, Instrument>>;
+//   using MyEngine = GenericRiskAggregationEngine<Context, Instrument,
+//       metrics::DeltaMetric<aggregation::UnderlyerKey, Context, Instrument>,
+//       metrics::NotionalMetric<aggregation::GlobalKey, Context, Instrument>>;
 //
-//   MyEngine engine;
+//   Context ctx;
+//   MyEngine engine(ctx);
 //   auto inst = provider.get_instrument(order.symbol);
 //   engine.on_new_order_single(order, inst);
 //
@@ -77,24 +81,25 @@ inline constexpr bool has_set_instrument_position_with_instrument_v =
 // define its AccessorMixin specialization in its own header file.
 //
 // Each metric type must implement the following interface:
-//   - void on_order_added(const TrackedOrder& order, const Instrument& instrument)
-//   - void on_order_removed(const TrackedOrder& order, const Instrument& instrument)
-//   - void on_order_updated(const TrackedOrder& order, const Instrument& instrument, int64_t old_qty)
-//   - void on_partial_fill(const TrackedOrder& order, const Instrument& instrument, int64_t filled_qty)
-//   - void on_full_fill(const TrackedOrder& order, const Instrument& instrument, int64_t filled_qty)
-//   - void on_state_change(const TrackedOrder& order, const Instrument& instrument, OrderState old, OrderState new)
+//   - void on_order_added(const TrackedOrder& order, const Instrument& instrument, const Context& context)
+//   - void on_order_removed(const TrackedOrder& order, const Instrument& instrument, const Context& context)
+//   - void on_order_updated(const TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty)
+//   - void on_partial_fill(const TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty)
+//   - void on_full_fill(const TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty)
+//   - void on_state_change(const TrackedOrder& order, const Instrument& instrument, const Context& context, OrderState old, OrderState new)
 //   - void clear()
 //
 // ============================================================================
 
-template<typename Instrument, typename... Metrics>
+template<typename ContextType, typename Instrument, typename... Metrics>
 class GenericRiskAggregationEngine
-    : public AccessorMixin<GenericRiskAggregationEngine<Instrument, Metrics...>, Metrics>... {
+    : public AccessorMixin<GenericRiskAggregationEngine<ContextType, Instrument, Metrics...>, Metrics>... {
 
     static_assert(instrument::is_instrument_v<Instrument>,
                   "Instrument must satisfy instrument requirements");
 
 private:
+    const ContextType& context_;
     OrderBook order_book_;
     std::tuple<Metrics...> metrics_;
 
@@ -107,8 +112,15 @@ private:
 
 public:
     using instrument_type = Instrument;
+    using context_type = ContextType;
 
-    GenericRiskAggregationEngine() = default;
+    explicit GenericRiskAggregationEngine(const ContextType& context) : context_(context) {}
+
+    // ========================================================================
+    // Context access
+    // ========================================================================
+
+    const ContextType& context() const { return context_; }
 
     // ========================================================================
     // Metric access
@@ -145,8 +157,8 @@ public:
         order_book_.add_order(msg);
         auto* order = order_book_.get_order(msg.key);
         if (order) {
-            for_each_metric([order, &instrument](auto& metric) {
-                metric.on_order_added(*order, instrument);
+            for_each_metric([order, &instrument, this](auto& metric) {
+                metric.on_order_added(*order, instrument, context_);
             });
         }
     }
@@ -160,8 +172,8 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, instrument, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state, this](auto& metric) {
+                metric.on_state_change(*order, instrument, context_, old_state, new_state);
             });
         }
     }
@@ -175,8 +187,8 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, instrument, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state, this](auto& metric) {
+                metric.on_state_change(*order, instrument, context_, old_state, new_state);
             });
         }
     }
@@ -228,8 +240,8 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, instrument, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state, this](auto& metric) {
+                metric.on_state_change(*order, instrument, context_, old_state, new_state);
             });
         }
     }
@@ -256,10 +268,10 @@ public:
     // Signed quantity: positive = long, negative = short
     // For gross metrics, absolute value is used internally
     void set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument) {
-        for_each_metric([&symbol, signed_quantity, &instrument](auto& metric) {
+        for_each_metric([&symbol, signed_quantity, &instrument, this](auto& metric) {
             using MetricType = std::decay_t<decltype(metric)>;
-            if constexpr (has_set_instrument_position_with_instrument_v<MetricType, Instrument>) {
-                metric.set_instrument_position(symbol, signed_quantity, instrument);
+            if constexpr (has_set_instrument_position_with_instrument_and_context_v<MetricType, Instrument, ContextType>) {
+                metric.set_instrument_position(symbol, signed_quantity, instrument, context_);
             }
         });
     }
@@ -274,8 +286,8 @@ private:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, instrument, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state, this](auto& metric) {
+                metric.on_state_change(*order, instrument, context_, old_state, new_state);
             });
         }
     }
@@ -284,8 +296,8 @@ private:
         auto* order = order_book_.get_order(msg.key);
         if (!order) return;
 
-        for_each_metric([order, &instrument](auto& metric) {
-            metric.on_order_removed(*order, instrument);
+        for_each_metric([order, &instrument, this](auto& metric) {
+            metric.on_order_removed(*order, instrument, context_);
         });
 
         order_book_.reject_order(msg.key);
@@ -315,13 +327,13 @@ private:
                     // First: remove old_qty from old stage and add old_qty to new stage
                     // Second: update from old_qty to new_qty in new stage
                     // These can be combined: remove old_qty from old stage, add new_qty to new stage
-                    for_each_metric([updated_order, &instrument, old_leaves_qty, old_state, new_state](auto& metric) {
-                        metric.on_order_updated_with_state_change(*updated_order, instrument, old_leaves_qty, old_state, new_state);
+                    for_each_metric([updated_order, &instrument, old_leaves_qty, old_state, new_state, this](auto& metric) {
+                        metric.on_order_updated_with_state_change(*updated_order, instrument, context_, old_leaves_qty, old_state, new_state);
                     });
                 } else {
                     // Same stage, just quantity update
-                    for_each_metric([updated_order, &instrument, old_leaves_qty](auto& metric) {
-                        metric.on_order_updated(*updated_order, instrument, old_leaves_qty);
+                    for_each_metric([updated_order, &instrument, old_leaves_qty, this](auto& metric) {
+                        metric.on_order_updated(*updated_order, instrument, context_, old_leaves_qty);
                     });
                 }
             }
@@ -338,8 +350,8 @@ private:
         auto* order = order_book_.resolve_order(key);
         if (!order) return;
 
-        for_each_metric([order, &instrument](auto& metric) {
-            metric.on_order_removed(*order, instrument);
+        for_each_metric([order, &instrument, this](auto& metric) {
+            metric.on_order_removed(*order, instrument, context_);
         });
 
         order_book_.complete_cancel(key);
@@ -355,8 +367,8 @@ private:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, instrument, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state, this](auto& metric) {
+                metric.on_state_change(*order, instrument, context_, old_state, new_state);
             });
         }
     }
@@ -368,8 +380,8 @@ private:
         auto result = order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
         if (result.has_value()) {
             int64_t filled_qty = result->filled_qty;
-            for_each_metric([order, &instrument, filled_qty](auto& metric) {
-                metric.on_partial_fill(*order, instrument, filled_qty);
+            for_each_metric([order, &instrument, filled_qty, this](auto& metric) {
+                metric.on_partial_fill(*order, instrument, context_, filled_qty);
             });
         }
     }
@@ -382,13 +394,13 @@ private:
         int64_t filled_qty = msg.last_qty;
 
         // Remove metrics BEFORE apply_fill updates leaves_qty to 0
-        for_each_metric([order, &instrument](auto& metric) {
-            metric.on_order_removed(*order, instrument);
+        for_each_metric([order, &instrument, this](auto& metric) {
+            metric.on_order_removed(*order, instrument, context_);
         });
 
         // Credit position stage with filled quantity
-        for_each_metric([order, &instrument, filled_qty](auto& metric) {
-            metric.on_full_fill(*order, instrument, filled_qty);
+        for_each_metric([order, &instrument, filled_qty, this](auto& metric) {
+            metric.on_full_fill(*order, instrument, context_, filled_qty);
         });
 
         order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
@@ -403,9 +415,9 @@ private:
 // need instrument data (e.g., OrderCountMetrics).
 //
 
-template<typename... Metrics>
-class GenericRiskAggregationEngine<void, Metrics...>
-    : public AccessorMixin<GenericRiskAggregationEngine<void, Metrics...>, Metrics>... {
+template<typename ContextType, typename... Metrics>
+class GenericRiskAggregationEngine<ContextType, void, Metrics...>
+    : public AccessorMixin<GenericRiskAggregationEngine<ContextType, void, Metrics...>, Metrics>... {
 
 private:
     OrderBook order_book_;
@@ -420,6 +432,7 @@ private:
 
 public:
     using instrument_type = void;
+    using context_type = ContextType;
 
     GenericRiskAggregationEngine() = default;
 

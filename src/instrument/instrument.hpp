@@ -329,6 +329,53 @@ double compute_vega_exposure(const Instrument& inst, int64_t quantity) {
          * inst.fx_rate();
 }
 
+// ============================================================================
+// Context-aware free function templates
+// ============================================================================
+//
+// These versions accept a Context that provides accessor methods for instrument
+// properties. This allows the caller to control how instrument data is retrieved
+// (e.g., from a cache, database, or real-time feed).
+//
+// Context requirements for notional:
+//   - double contract_size(const Instrument&) const
+//   - double spot_price(const Instrument&) const
+//   - double fx_rate(const Instrument&) const
+//
+// Additional context requirements for delta exposure:
+//   - double delta(const Instrument&) const
+//   - double underlyer_spot(const Instrument&) const
+//
+// Additional context requirements for vega exposure:
+//   - double vega(const Instrument&) const
+//
+
+template<typename Context, typename Instrument>
+double compute_notional(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    return static_cast<double>(quantity)
+         * ctx.contract_size(inst)
+         * ctx.spot_price(inst)
+         * ctx.fx_rate(inst);
+}
+
+template<typename Context, typename Instrument>
+double compute_delta_exposure(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    return static_cast<double>(quantity)
+         * ctx.delta(inst)
+         * ctx.contract_size(inst)
+         * ctx.underlyer_spot(inst)
+         * ctx.fx_rate(inst);
+}
+
+template<typename Context, typename Instrument>
+double compute_vega_exposure(const Context& ctx, const Instrument& inst, int64_t quantity) {
+    return static_cast<double>(quantity)
+         * ctx.vega(inst)
+         * ctx.contract_size(inst)
+         * ctx.underlyer_spot(inst)
+         * ctx.fx_rate(inst);
+}
+
 // Legacy overloads for Provider-based API (backward compatibility)
 template<typename Provider>
 double compute_notional(const Provider& provider, const std::string& symbol, int64_t quantity) {

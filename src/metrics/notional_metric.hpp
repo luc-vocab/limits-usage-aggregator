@@ -29,13 +29,14 @@ namespace metrics {
 //
 // Template parameters:
 //   Key: The grouping key type (GlobalKey, StrategyKey, or PortfolioKey)
+//   Context: Type providing accessor methods for instrument properties
 //   Instrument: Must satisfy the notional instrument requirements
 //   Stages...: Stage types to track (PositionStage, OpenStage, InFlightStage, or AllStages)
 //
 // Notional is computed as: quantity * contract_size * spot_price * fx_rate
 //
 
-template<typename Key, typename Instrument, typename... Stages>
+template<typename Key, typename Context, typename Instrument, typename... Stages>
 class NotionalMetric {
     static_assert(instrument::is_notional_instrument_v<Instrument>,
                   "Instrument must satisfy notional instrument requirements (spot, fx, contract_size)");
@@ -43,6 +44,7 @@ class NotionalMetric {
 public:
     using key_type = Key;
     using value_type = double;
+    using context_type = Context;
     using instrument_type = Instrument;
     using Config = aggregation::StageConfig<Stages...>;
 
@@ -51,19 +53,20 @@ public:
     // ========================================================================
 
     // Compute the notional contribution for a new order
-    template<typename Inst>
-    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument) {
-        return instrument::compute_notional(instrument, order.quantity);
+    template<typename Ctx, typename Inst>
+    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument, const Ctx& context) {
+        return instrument::compute_notional(context, instrument, order.quantity);
     }
 
     // Compute the notional contribution for an order update (new - old)
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Inst& instrument) {
-        double old_notional = instrument::compute_notional(instrument, existing_order.leaves_qty);
-        double new_notional = instrument::compute_notional(instrument, update.quantity);
+        const Inst& instrument,
+        const Ctx& context) {
+        double old_notional = instrument::compute_notional(context, instrument, existing_order.leaves_qty);
+        double new_notional = instrument::compute_notional(context, instrument, update.quantity);
         return new_notional - old_notional;
     }
 
@@ -178,17 +181,19 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument);
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument);
-    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty);
-    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty);
-    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty);
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context);
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context);
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty);
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty);
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty);
     void on_state_change(const engine::TrackedOrder& order,
                          const Instrument& instrument,
+                         const Context& context,
                          engine::OrderState old_state,
                          engine::OrderState new_state);
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
                                              const Instrument& instrument,
+                                             const Context& context,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state);
@@ -205,8 +210,8 @@ private:
     bool is_applicable(const engine::TrackedOrder& order) const;
 
     // Compute notional for the order
-    double compute_notional(const Instrument& instrument, int64_t quantity) const {
-        return instrument::compute_notional(instrument, quantity);
+    double compute_notional(const Instrument& instrument, const Context& context, int64_t quantity) const {
+        return instrument::compute_notional(context, instrument, quantity);
     }
 };
 
@@ -214,22 +219,22 @@ private:
 // GlobalNotionalMetric - Convenience alias for global notional tracking
 // ============================================================================
 
-template<typename Instrument, typename... Stages>
-using GlobalNotionalMetric = NotionalMetric<aggregation::GlobalKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalNotionalMetric = NotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>;
 
 // ============================================================================
 // StrategyNotionalMetric - Convenience alias for per-strategy notional tracking
 // ============================================================================
 
-template<typename Instrument, typename... Stages>
-using StrategyNotionalMetric = NotionalMetric<aggregation::StrategyKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using StrategyNotionalMetric = NotionalMetric<aggregation::StrategyKey, Context, Instrument, Stages...>;
 
 // ============================================================================
 // PortfolioNotionalMetric - Convenience alias for per-portfolio notional tracking
 // ============================================================================
 
-template<typename Instrument, typename... Stages>
-using PortfolioNotionalMetric = NotionalMetric<aggregation::PortfolioKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using PortfolioNotionalMetric = NotionalMetric<aggregation::PortfolioKey, Context, Instrument, Stages...>;
 
 // ============================================================================
 // GrossNotionalMetric - Single-value metric tracking absolute notional
@@ -240,7 +245,7 @@ using PortfolioNotionalMetric = NotionalMetric<aggregation::PortfolioKey, Instru
 // BID and ASK both add positive values (sum of |notional|).
 //
 
-template<typename Key, typename Instrument, typename... Stages>
+template<typename Key, typename Context, typename Instrument, typename... Stages>
 class GrossNotionalMetric {
     static_assert(instrument::is_notional_instrument_v<Instrument>,
                   "Instrument must satisfy notional instrument requirements (spot, fx, contract_size)");
@@ -248,6 +253,7 @@ class GrossNotionalMetric {
 public:
     using key_type = Key;
     using value_type = double;
+    using context_type = Context;
     using instrument_type = Instrument;
     using Config = aggregation::StageConfig<Stages...>;
 
@@ -256,19 +262,20 @@ public:
     // ========================================================================
 
     // Compute the gross notional contribution for a new order
-    template<typename Inst>
-    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument) {
-        return std::abs(instrument::compute_notional(instrument, order.quantity));
+    template<typename Ctx, typename Inst>
+    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument, const Ctx& context) {
+        return std::abs(instrument::compute_notional(context, instrument, order.quantity));
     }
 
     // Compute the gross notional contribution for an order update (new - old)
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Inst& instrument) {
-        double old_notional = std::abs(instrument::compute_notional(instrument, existing_order.leaves_qty));
-        double new_notional = std::abs(instrument::compute_notional(instrument, update.quantity));
+        const Inst& instrument,
+        const Ctx& context) {
+        double old_notional = std::abs(instrument::compute_notional(context, instrument, existing_order.leaves_qty));
+        double new_notional = std::abs(instrument::compute_notional(context, instrument, update.quantity));
         return new_notional - old_notional;
     }
 
@@ -310,12 +317,12 @@ private:
 
     Storage storage_;
 
-    double compute_gross(const engine::TrackedOrder& order, const Instrument& inst) const {
-        return std::abs(instrument::compute_notional(inst, order.leaves_qty));
+    double compute_gross(const engine::TrackedOrder& order, const Instrument& inst, const Context& ctx) const {
+        return std::abs(instrument::compute_notional(ctx, inst, order.leaves_qty));
     }
 
-    double compute_gross(int64_t quantity, const Instrument& inst) const {
-        return std::abs(instrument::compute_notional(inst, quantity));
+    double compute_gross(int64_t quantity, const Instrument& inst, const Context& ctx) const {
+        return std::abs(instrument::compute_notional(ctx, inst, quantity));
     }
 
     Key extract_order_key(const engine::TrackedOrder& order) const {
@@ -364,7 +371,7 @@ public:
     // Signed quantity is accepted (for engine-level interface compatibility) but absolute value is used
     template<typename Dummy = void>
     std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, void>
-    set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument) {
+    set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument, const Context& context) {
         Key key = aggregation::GlobalKey::instance();
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (!pos_data) return;
@@ -372,13 +379,13 @@ public:
         // Remove old contribution if exists
         auto it = pos_data->instrument_quantities.find(symbol);
         if (it != pos_data->instrument_quantities.end()) {
-            double old_gross = compute_gross(it->second, instrument);
+            double old_gross = compute_gross(it->second, instrument, context);
             pos_data->gross_notional.remove(key, old_gross);
         }
 
         // Add new contribution (use absolute value for gross)
         int64_t abs_quantity = std::abs(signed_quantity);
-        double new_gross = compute_gross(abs_quantity, instrument);
+        double new_gross = compute_gross(abs_quantity, instrument, context);
         pos_data->gross_notional.add(key, new_gross);
         pos_data->instrument_quantities[symbol] = abs_quantity;
     }
@@ -387,20 +394,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(order, instrument);
+        double gross = compute_gross(order, instrument, context);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->gross_notional.add(key, gross);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(order, instrument);
+        double gross = compute_gross(order, instrument, context);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -408,11 +415,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(old_qty, instrument);
-        double new_gross = compute_gross(order, instrument);
+        double old_gross = compute_gross(old_qty, instrument, context);
+        double new_gross = compute_gross(order, instrument, context);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -421,10 +428,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(filled_qty, instrument);
+        double filled_gross = compute_gross(filled_qty, instrument, context);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -437,10 +444,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(filled_qty, instrument);
+        double filled_gross = compute_gross(filled_qty, instrument, context);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -450,6 +457,7 @@ public:
 
     void on_state_change(const engine::TrackedOrder& order,
                          const Instrument& instrument,
+                         const Context& context,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -458,7 +466,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double gross = compute_gross(order, instrument);
+            double gross = compute_gross(order, instrument, context);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -474,13 +482,14 @@ public:
 
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
                                              const Instrument& instrument,
+                                             const Context& context,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(old_qty, instrument);
-        double new_gross = compute_gross(order, instrument);
+        double old_gross = compute_gross(old_qty, instrument, context);
+        double new_gross = compute_gross(order, instrument, context);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -510,7 +519,7 @@ public:
 // BID = +notional, ASK = -notional
 //
 
-template<typename Key, typename Instrument, typename... Stages>
+template<typename Key, typename Context, typename Instrument, typename... Stages>
 class NetNotionalMetric {
     static_assert(instrument::is_notional_instrument_v<Instrument>,
                   "Instrument must satisfy notional instrument requirements (spot, fx, contract_size)");
@@ -518,6 +527,7 @@ class NetNotionalMetric {
 public:
     using key_type = Key;
     using value_type = double;
+    using context_type = Context;
     using instrument_type = Instrument;
     using Config = aggregation::StageConfig<Stages...>;
 
@@ -526,22 +536,23 @@ public:
     // ========================================================================
 
     // Compute the net notional contribution for a new order
-    template<typename Inst>
-    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument) {
-        double notional = instrument::compute_notional(instrument, order.quantity);
+    template<typename Ctx, typename Inst>
+    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument, const Ctx& context) {
+        double notional = instrument::compute_notional(context, instrument, order.quantity);
         return (order.side == fix::Side::BID) ? notional : -notional;
     }
 
     // Compute the net notional contribution for an order update (new - old)
-    template<typename Inst>
+    template<typename Ctx, typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Inst& instrument) {
-        double old_notional = instrument::compute_notional(instrument, existing_order.leaves_qty);
+        const Inst& instrument,
+        const Ctx& context) {
+        double old_notional = instrument::compute_notional(context, instrument, existing_order.leaves_qty);
         double old_net = (existing_order.side == fix::Side::BID) ? old_notional : -old_notional;
 
-        double new_notional = instrument::compute_notional(instrument, update.quantity);
+        double new_notional = instrument::compute_notional(context, instrument, update.quantity);
         double new_net = (update.side == fix::Side::BID) ? new_notional : -new_notional;
 
         return new_net - old_net;
@@ -587,19 +598,19 @@ private:
 
     Storage storage_;
 
-    double compute_net(const engine::TrackedOrder& order, const Instrument& inst) const {
-        double notional = instrument::compute_notional(inst, order.leaves_qty);
+    double compute_net(const engine::TrackedOrder& order, const Instrument& inst, const Context& ctx) const {
+        double notional = instrument::compute_notional(ctx, inst, order.leaves_qty);
         return (order.side == fix::Side::BID) ? notional : -notional;
     }
 
-    double compute_net(int64_t quantity, fix::Side side, const Instrument& inst) const {
-        double notional = instrument::compute_notional(inst, quantity);
+    double compute_net(int64_t quantity, fix::Side side, const Instrument& inst, const Context& ctx) const {
+        double notional = instrument::compute_notional(ctx, inst, quantity);
         return (side == fix::Side::BID) ? notional : -notional;
     }
 
     // Compute net notional from signed quantity (positive = long, negative = short)
-    double compute_net_from_signed_qty(int64_t signed_quantity, const Instrument& inst) const {
-        double notional = instrument::compute_notional(inst, std::abs(signed_quantity));
+    double compute_net_from_signed_qty(int64_t signed_quantity, const Instrument& inst, const Context& ctx) const {
+        double notional = instrument::compute_notional(ctx, inst, std::abs(signed_quantity));
         return (signed_quantity >= 0) ? notional : -notional;
     }
 
@@ -649,7 +660,7 @@ public:
     // Computes notional from instrument data: qty * contract_size * spot_price * fx_rate
     template<typename Dummy = void>
     std::enable_if_t<Storage::Config::track_position && std::is_void_v<Dummy>, void>
-    set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument) {
+    set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument, const Context& context) {
         Key key = aggregation::GlobalKey::instance();
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (!pos_data) return;
@@ -657,12 +668,12 @@ public:
         // Remove old contribution if exists
         auto it = pos_data->instrument_quantities.find(symbol);
         if (it != pos_data->instrument_quantities.end()) {
-            double old_net = compute_net_from_signed_qty(it->second, instrument);
+            double old_net = compute_net_from_signed_qty(it->second, instrument, context);
             pos_data->net_notional.remove(key, old_net);
         }
 
         // Add new contribution
-        double new_net = compute_net_from_signed_qty(signed_quantity, instrument);
+        double new_net = compute_net_from_signed_qty(signed_quantity, instrument, context);
         pos_data->net_notional.add(key, new_net);
         pos_data->instrument_quantities[symbol] = signed_quantity;
     }
@@ -671,20 +682,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(order, instrument);
+        double net = compute_net(order, instrument, context);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->net_notional.add(key, net);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(order, instrument);
+        double net = compute_net(order, instrument, context);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -692,11 +703,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(old_qty, order.side, instrument);
-        double new_net = compute_net(order, instrument);
+        double old_net = compute_net(old_qty, order.side, instrument, context);
+        double new_net = compute_net(order, instrument, context);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -705,10 +716,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(filled_qty, order.side, instrument);
+        double filled_net = compute_net(filled_qty, order.side, instrument, context);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -721,10 +732,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(filled_qty, order.side, instrument);
+        double filled_net = compute_net(filled_qty, order.side, instrument, context);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -734,6 +745,7 @@ public:
 
     void on_state_change(const engine::TrackedOrder& order,
                          const Instrument& instrument,
+                         const Context& context,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -742,7 +754,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double net = compute_net(order, instrument);
+            double net = compute_net(order, instrument, context);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -758,13 +770,14 @@ public:
 
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
                                              const Instrument& instrument,
+                                             const Context& context,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(old_qty, order.side, instrument);
-        double new_net = compute_net(order, instrument);
+        double old_net = compute_net(old_qty, order.side, instrument, context);
+        double new_net = compute_net(order, instrument, context);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -789,11 +802,11 @@ public:
 // Type aliases for Gross/Net notional metrics
 // ============================================================================
 
-template<typename Instrument, typename... Stages>
-using GlobalGrossNotionalMetric = GrossNotionalMetric<aggregation::GlobalKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalGrossNotionalMetric = GrossNotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>;
 
-template<typename Instrument, typename... Stages>
-using GlobalNetNotionalMetric = NetNotionalMetric<aggregation::GlobalKey, Instrument, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalNetNotionalMetric = NetNotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>;
 
 } // namespace metrics
 
@@ -803,8 +816,8 @@ using GlobalNetNotionalMetric = NetNotionalMetric<aggregation::GlobalKey, Instru
 namespace metrics {
 
 // Key extraction specializations
-template<typename Key, typename Instrument, typename... Stages>
-Key NotionalMetric<Key, Instrument, Stages...>::extract_order_key(const engine::TrackedOrder& order) const {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+Key NotionalMetric<Key, Context, Instrument, Stages...>::extract_order_key(const engine::TrackedOrder& order) const {
     if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
         (void)order;
         return aggregation::GlobalKey::instance();
@@ -817,8 +830,8 @@ Key NotionalMetric<Key, Instrument, Stages...>::extract_order_key(const engine::
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-bool NotionalMetric<Key, Instrument, Stages...>::is_applicable(const engine::TrackedOrder& order) const {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+bool NotionalMetric<Key, Context, Instrument, Stages...>::is_applicable(const engine::TrackedOrder& order) const {
     if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
         (void)order;
         return true;
@@ -831,51 +844,51 @@ bool NotionalMetric<Key, Instrument, Stages...>::is_applicable(const engine::Tra
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
     if (!is_applicable(order)) return;
 
     if constexpr (Config::track_in_flight) {
         Key key = extract_order_key(order);
-        double notional = compute_notional(instrument, order.leaves_qty);
+        double notional = compute_notional(instrument, context, order.leaves_qty);
         storage_.in_flight().notional.add(key, notional);
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
     auto stage = aggregation::stage_from_order_state(order.state);
     auto* stage_data = storage_.get_stage(stage);
     if (stage_data) {
-        double notional = compute_notional(instrument, order.leaves_qty);
+        double notional = compute_notional(instrument, context, order.leaves_qty);
         stage_data->notional.remove(key, notional);
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
     auto stage = aggregation::stage_from_order_state(order.state);
     auto* stage_data = storage_.get_stage(stage);
     if (stage_data) {
-        double old_notional = compute_notional(instrument, old_qty);
-        double new_notional = compute_notional(instrument, order.leaves_qty);
+        double old_notional = compute_notional(instrument, context, old_qty);
+        double new_notional = compute_notional(instrument, context, order.leaves_qty);
         stage_data->notional.remove(key, old_notional);
         stage_data->notional.add(key, new_notional);
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
-    double fill_notional = compute_notional(instrument, filled_qty);
+    double fill_notional = compute_notional(instrument, context, filled_qty);
 
     // Remove from open stage
     if constexpr (Config::track_open) {
@@ -887,12 +900,12 @@ void NotionalMetric<Key, Instrument, Stages...>::on_partial_fill(const engine::T
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
-    double fill_notional = compute_notional(instrument, filled_qty);
+    double fill_notional = compute_notional(instrument, context, filled_qty);
 
     // Add to position stage (removal from open/in_flight handled by on_order_removed)
     if constexpr (Config::track_position) {
@@ -900,9 +913,10 @@ void NotionalMetric<Key, Instrument, Stages...>::on_full_fill(const engine::Trac
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_state_change(const engine::TrackedOrder& order,
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_state_change(const engine::TrackedOrder& order,
                                                                 const Instrument& instrument,
+                                                                const Context& context,
                                                                 engine::OrderState old_state,
                                                                 engine::OrderState new_state) {
     if (!is_applicable(order)) return;
@@ -912,7 +926,7 @@ void NotionalMetric<Key, Instrument, Stages...>::on_state_change(const engine::T
 
     if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
         Key key = extract_order_key(order);
-        double notional = compute_notional(instrument, order.leaves_qty);
+        double notional = compute_notional(instrument, context, order.leaves_qty);
 
         auto* old_stage_data = storage_.get_stage(old_stage);
         auto* new_stage_data = storage_.get_stage(new_stage);
@@ -926,10 +940,11 @@ void NotionalMetric<Key, Instrument, Stages...>::on_state_change(const engine::T
     }
 }
 
-template<typename Key, typename Instrument, typename... Stages>
-void NotionalMetric<Key, Instrument, Stages...>::on_order_updated_with_state_change(
+template<typename Key, typename Context, typename Instrument, typename... Stages>
+void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_updated_with_state_change(
     const engine::TrackedOrder& order,
     const Instrument& instrument,
+    const Context& context,
     int64_t old_qty,
     engine::OrderState old_state,
     engine::OrderState new_state) {
@@ -940,8 +955,8 @@ void NotionalMetric<Key, Instrument, Stages...>::on_order_updated_with_state_cha
     auto new_stage = aggregation::stage_from_order_state(new_state);
 
     Key key = extract_order_key(order);
-    double old_notional = compute_notional(instrument, old_qty);
-    double new_notional = compute_notional(instrument, order.leaves_qty);
+    double old_notional = compute_notional(instrument, context, old_qty);
+    double new_notional = compute_notional(instrument, context, order.leaves_qty);
 
     auto* old_stage_data = storage_.get_stage(old_stage);
     auto* new_stage_data = storage_.get_stage(new_stage);
@@ -965,12 +980,12 @@ void NotionalMetric<Key, Instrument, Stages...>::on_order_updated_with_state_cha
 namespace engine {
 
 // Generic NotionalMetric accessor mixin
-template<typename Derived, typename Key, typename Instrument, typename... Stages>
-class AccessorMixin<Derived, metrics::NotionalMetric<Key, Instrument, Stages...>> {
+template<typename Derived, typename Key, typename Context, typename Instrument, typename... Stages>
+class AccessorMixin<Derived, metrics::NotionalMetric<Key, Context, Instrument, Stages...>> {
 protected:
-    const metrics::NotionalMetric<Key, Instrument, Stages...>& notional_metric_() const {
+    const metrics::NotionalMetric<Key, Context, Instrument, Stages...>& notional_metric_() const {
         return static_cast<const Derived*>(this)->template
-            get_metric<metrics::NotionalMetric<Key, Instrument, Stages...>>();
+            get_metric<metrics::NotionalMetric<Key, Context, Instrument, Stages...>>();
     }
 
 public:
@@ -984,13 +999,13 @@ public:
 };
 
 // Specialization for GlobalKey with convenience methods
-template<typename Derived, typename Instrument, typename... Stages>
-class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::GlobalKey, Instrument, Stages...>> {
+template<typename Derived, typename Context, typename Instrument, typename... Stages>
+class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>> {
 protected:
-    const metrics::NotionalMetric<aggregation::GlobalKey, Instrument, Stages...>&
+    const metrics::NotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>&
     global_notional_metric_() const {
         return static_cast<const Derived*>(this)->template
-            get_metric<metrics::NotionalMetric<aggregation::GlobalKey, Instrument, Stages...>>();
+            get_metric<metrics::NotionalMetric<aggregation::GlobalKey, Context, Instrument, Stages...>>();
     }
 
 public:
@@ -1004,13 +1019,13 @@ public:
 };
 
 // Specialization for StrategyKey with convenience methods
-template<typename Derived, typename Instrument, typename... Stages>
-class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::StrategyKey, Instrument, Stages...>> {
+template<typename Derived, typename Context, typename Instrument, typename... Stages>
+class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::StrategyKey, Context, Instrument, Stages...>> {
 protected:
-    const metrics::NotionalMetric<aggregation::StrategyKey, Instrument, Stages...>&
+    const metrics::NotionalMetric<aggregation::StrategyKey, Context, Instrument, Stages...>&
     strategy_notional_metric_() const {
         return static_cast<const Derived*>(this)->template
-            get_metric<metrics::NotionalMetric<aggregation::StrategyKey, Instrument, Stages...>>();
+            get_metric<metrics::NotionalMetric<aggregation::StrategyKey, Context, Instrument, Stages...>>();
     }
 
 public:
@@ -1024,13 +1039,13 @@ public:
 };
 
 // Specialization for PortfolioKey with convenience methods
-template<typename Derived, typename Instrument, typename... Stages>
-class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::PortfolioKey, Instrument, Stages...>> {
+template<typename Derived, typename Context, typename Instrument, typename... Stages>
+class AccessorMixin<Derived, metrics::NotionalMetric<aggregation::PortfolioKey, Context, Instrument, Stages...>> {
 protected:
-    const metrics::NotionalMetric<aggregation::PortfolioKey, Instrument, Stages...>&
+    const metrics::NotionalMetric<aggregation::PortfolioKey, Context, Instrument, Stages...>&
     portfolio_notional_metric_() const {
         return static_cast<const Derived*>(this)->template
-            get_metric<metrics::NotionalMetric<aggregation::PortfolioKey, Instrument, Stages...>>();
+            get_metric<metrics::NotionalMetric<aggregation::PortfolioKey, Context, Instrument, Stages...>>();
     }
 
 public:
