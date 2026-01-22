@@ -3,8 +3,8 @@
 #include "../aggregation/staged_metric.hpp"
 #include "../aggregation/aggregation_core.hpp"
 #include "../aggregation/key_extractors.hpp"
+#include "../aggregation/container_types.hpp"
 #include "../fix/fix_types.hpp"
-#include <unordered_map>
 #include <unordered_set>
 
 // Forward declarations
@@ -432,7 +432,7 @@ private:
     // Per-stage data structure
     struct StageData {
         // Map from underlyer to set of instruments that have orders
-        std::unordered_map<std::string, std::unordered_set<std::string>> instruments_per_underlyer;
+        aggregation::HashMap<std::string, std::unordered_set<std::string>> instruments_per_underlyer;
         // Count bucket
         aggregation::AggregationBucket<aggregation::UnderlyerKey, aggregation::CountCombiner> count;
 
@@ -477,7 +477,7 @@ private:
     Storage storage_;
 
     // Track orders per instrument-side to know when to remove from quoted count
-    std::unordered_map<std::string, int> order_count_per_instrument_;
+    aggregation::HashMap<std::string, int> order_count_per_instrument_;
 
 public:
     // ========================================================================

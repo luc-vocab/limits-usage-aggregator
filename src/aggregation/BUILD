@@ -2,6 +2,12 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Container types alias - no dependencies, can be used anywhere
+cc_library(
+    name = "container_types",
+    hdrs = ["container_types.hpp"],
+)
+
 cc_library(
     name = "aggregation",
     hdrs = [
@@ -11,6 +17,7 @@ cc_library(
         "staged_metric.hpp",
     ],
     deps = [
+        ":container_types",
         ":order_stage",
     ],
 )

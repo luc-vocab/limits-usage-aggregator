@@ -1,7 +1,7 @@
 #pragma once
 
+#include "../aggregation/container_types.hpp"
 #include <string>
-#include <unordered_map>
 #include <cstdint>
 #include <type_traits>
 
@@ -372,9 +372,9 @@ struct NullInstrument {
 
 class SimpleInstrumentProvider {
 private:
-    std::unordered_map<std::string, double> spot_prices_;
-    std::unordered_map<std::string, double> fx_rates_;
-    std::unordered_map<std::string, double> contract_sizes_;
+    aggregation::HashMap<std::string, double> spot_prices_;
+    aggregation::HashMap<std::string, double> fx_rates_;
+    aggregation::HashMap<std::string, double> contract_sizes_;
     double default_spot_ = 1.0;
     double default_fx_ = 1.0;
     double default_contract_size_ = 1.0;
@@ -429,7 +429,7 @@ public:
 
 class StaticInstrumentProvider {
 private:
-    std::unordered_map<std::string, InstrumentData> instruments_;
+    aggregation::HashMap<std::string, InstrumentData> instruments_;
     InstrumentData default_data_;
 
 public:

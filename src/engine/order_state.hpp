@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../fix/fix_messages.hpp"
-#include <unordered_map>
+#include "../aggregation/container_types.hpp"
 #include <optional>
 
 namespace engine {
@@ -73,10 +73,10 @@ struct TrackedOrder {
 class OrderBook {
 private:
     // Primary index: ClOrdID -> Order
-    std::unordered_map<fix::OrderKey, TrackedOrder> orders_;
+    aggregation::HashMap<fix::OrderKey, TrackedOrder> orders_;
 
     // Mapping from pending replace ClOrdID to original ClOrdID
-    std::unordered_map<fix::OrderKey, fix::OrderKey> pending_replace_map_;
+    aggregation::HashMap<fix::OrderKey, fix::OrderKey> pending_replace_map_;
 
 public:
     // Add a new order (on NewOrderSingle sent)

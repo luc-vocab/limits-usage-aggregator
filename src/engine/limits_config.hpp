@@ -1,6 +1,6 @@
 #pragma once
 
-#include <unordered_map>
+#include "../aggregation/container_types.hpp"
 #include <optional>
 #include <string>
 #include <cmath>
@@ -28,7 +28,7 @@ enum class LimitComparisonMode {
 template<typename Key>
 class LimitStore {
 private:
-    std::unordered_map<Key, double> limits_;
+    aggregation::HashMap<Key, double> limits_;
     double default_limit_ = std::numeric_limits<double>::max();
     LimitComparisonMode mode_ = LimitComparisonMode::ABSOLUTE;
 

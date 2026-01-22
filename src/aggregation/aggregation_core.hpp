@@ -2,7 +2,7 @@
 
 #include "grouping.hpp"
 #include "aggregation_traits.hpp"
-#include <unordered_map>
+#include "container_types.hpp"
 #include <optional>
 #include <tuple>
 #include <functional>
@@ -21,7 +21,7 @@ public:
     using combiner_type = Combiner;
 
 private:
-    std::unordered_map<Key, value_type> values_;
+    HashMap<Key, value_type> values_;
 
 public:
     // Get current value for a key (returns identity if not present)

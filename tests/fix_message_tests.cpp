@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "../src/fix/fix_types.hpp"
 #include "../src/fix/fix_messages.hpp"
+#include "../src/aggregation/container_types.hpp"
 
 using namespace fix;
 
@@ -40,7 +41,7 @@ TEST(OrderKeyTest, Equality) {
 }
 
 TEST(OrderKeyTest, HashMapUsage) {
-    std::unordered_map<OrderKey, int> map;
+    aggregation::HashMap<OrderKey, int> map;
     map[OrderKey{"ORD001"}] = 1;
     map[OrderKey{"ORD002"}] = 2;
 

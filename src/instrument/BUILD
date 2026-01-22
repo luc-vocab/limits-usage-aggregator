@@ -5,4 +5,7 @@ package(default_visibility = ["//visibility:public"])
 cc_library(
     name = "instrument",
     hdrs = ["instrument.hpp"],
+    deps = [
+        "//src/aggregation:container_types",
+    ],
 )

@@ -14,6 +14,7 @@ cc_library(
     name = "order_state",
     hdrs = ["order_state.hpp"],
     deps = [
+        "//src/aggregation:container_types",
         "//src/fix",
     ],
 )
@@ -22,6 +23,9 @@ cc_library(
 cc_library(
     name = "limits_config",
     hdrs = ["limits_config.hpp"],
+    deps = [
+        "//src/aggregation:container_types",
+    ],
 )
 
 # Pre-trade check result types

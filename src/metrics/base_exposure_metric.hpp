@@ -3,10 +3,10 @@
 #include "../aggregation/staged_metric.hpp"
 #include "../aggregation/aggregation_core.hpp"
 #include "../aggregation/key_extractors.hpp"
+#include "../aggregation/container_types.hpp"
 #include "../fix/fix_messages.hpp"
 #include "metric_policies.hpp"
 #include <cmath>
-#include <unordered_map>
 
 // Forward declarations
 namespace engine {
@@ -107,9 +107,9 @@ private:
     struct StageData {
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> value;
         // Track quantities per instrument for position recomputation (only for notional)
-        std::unordered_map<std::string, int64_t> instrument_quantities;
+        aggregation::HashMap<std::string, int64_t> instrument_quantities;
         // cl_ord_id -> (key, stored_inputs) for drift-free removal
-        std::unordered_map<std::string, std::pair<Key, StoredInputs>> order_inputs;
+        aggregation::HashMap<std::string, std::pair<Key, StoredInputs>> order_inputs;
 
         void clear() {
             value.clear();
