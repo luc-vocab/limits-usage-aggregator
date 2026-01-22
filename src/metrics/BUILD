@@ -14,9 +14,7 @@ cc_library(
     ],
     deps = [
         "//src/aggregation",
-        "//src/aggregation:multi_group",
-        "//src/aggregation:order_stage",
-        "//src/engine:order_state",
+        "//src/engine:engine_core",
         "//src/instrument",
     ],
 )
