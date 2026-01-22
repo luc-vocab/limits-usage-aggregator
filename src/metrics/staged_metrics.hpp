@@ -37,7 +37,6 @@ private:
     BaseMetric position_;
     BaseMetric open_;
     BaseMetric in_flight_;
-    instrument::InstrumentProvider* provider_ = nullptr;
 
 public:
     StagedMetrics() = default;
@@ -46,15 +45,11 @@ public:
     // InstrumentProvider setup
     // ========================================================================
 
-    void set_instrument_provider(instrument::InstrumentProvider* provider) {
-        provider_ = provider;
+    template<typename Provider>
+    void set_instrument_provider(const Provider* provider) {
         position_.set_instrument_provider(provider);
         open_.set_instrument_provider(provider);
         in_flight_.set_instrument_provider(provider);
-    }
-
-    instrument::InstrumentProvider* instrument_provider() const {
-        return provider_;
     }
 
     // ========================================================================
@@ -189,49 +184,43 @@ public:
     }
 };
 
-// ============================================================================
-// Specialization for DeltaMetrics - adds combined delta accessors
-// ============================================================================
-
-template<>
-class StagedMetrics<class DeltaMetrics>;  // Forward declare specialization
-
 } // namespace metrics
 
-// Include DeltaMetrics for specialization
+// Include DeltaMetrics for partial specialization
 #include "delta_metrics.hpp"
 
 namespace metrics {
 
-template<>
-class StagedMetrics<DeltaMetrics> {
+// ============================================================================
+// Partial specialization for DeltaMetrics<Provider> - adds combined delta accessors
+// ============================================================================
+
+template<typename Provider>
+class StagedMetrics<DeltaMetrics<Provider>> {
 private:
-    DeltaMetrics position_;
-    DeltaMetrics open_;
-    DeltaMetrics in_flight_;
-    instrument::InstrumentProvider* provider_ = nullptr;
+    using MetricType = DeltaMetrics<Provider>;
+    MetricType position_;
+    MetricType open_;
+    MetricType in_flight_;
 
 public:
     StagedMetrics() = default;
 
-    void set_instrument_provider(instrument::InstrumentProvider* provider) {
-        provider_ = provider;
+    void set_instrument_provider(const Provider* provider) {
         position_.set_instrument_provider(provider);
         open_.set_instrument_provider(provider);
         in_flight_.set_instrument_provider(provider);
     }
 
-    instrument::InstrumentProvider* instrument_provider() const { return provider_; }
-
     // Stage accessors
-    DeltaMetrics& position() { return position_; }
-    DeltaMetrics& open_orders() { return open_; }
-    DeltaMetrics& in_flight() { return in_flight_; }
-    const DeltaMetrics& position() const { return position_; }
-    const DeltaMetrics& open_orders() const { return open_; }
-    const DeltaMetrics& in_flight() const { return in_flight_; }
+    MetricType& position() { return position_; }
+    MetricType& open_orders() { return open_; }
+    MetricType& in_flight() { return in_flight_; }
+    const MetricType& position() const { return position_; }
+    const MetricType& open_orders() const { return open_; }
+    const MetricType& in_flight() const { return in_flight_; }
 
-    DeltaMetrics& stage(aggregation::OrderStage s) {
+    MetricType& stage(aggregation::OrderStage s) {
         switch (s) {
             case aggregation::OrderStage::POSITION: return position_;
             case aggregation::OrderStage::OPEN: return open_;
@@ -240,7 +229,7 @@ public:
         }
     }
 
-    const DeltaMetrics& stage(aggregation::OrderStage s) const {
+    const MetricType& stage(aggregation::OrderStage s) const {
         switch (s) {
             case aggregation::OrderStage::POSITION: return position_;
             case aggregation::OrderStage::OPEN: return open_;

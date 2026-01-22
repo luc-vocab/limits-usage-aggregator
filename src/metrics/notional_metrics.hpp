@@ -31,8 +31,8 @@ namespace metrics {
 
 template<typename Provider>
 class NotionalMetrics {
-    static_assert(instrument::is_instrument_provider_v<Provider>,
-                  "Provider must satisfy InstrumentProvider requirements");
+    static_assert(instrument::is_notional_provider_v<Provider>,
+                  "Provider must satisfy notional provider requirements (spot, fx, contract_size)");
 
 private:
     const Provider* provider_ = nullptr;

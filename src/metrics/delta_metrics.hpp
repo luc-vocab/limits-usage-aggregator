@@ -30,8 +30,8 @@ namespace metrics {
 
 template<typename Provider>
 class DeltaMetrics {
-    static_assert(instrument::is_instrument_provider_v<Provider>,
-                  "Provider must satisfy InstrumentProvider requirements");
+    static_assert(instrument::is_option_provider_v<Provider>,
+                  "Provider must satisfy option provider requirements (underlyer, delta support)");
 
 private:
     const Provider* provider_ = nullptr;

@@ -42,8 +42,8 @@ template<typename Provider, typename... Metrics>
 class GenericRiskAggregationEngine
     : public AccessorMixin<GenericRiskAggregationEngine<Provider, Metrics...>, Metrics>... {
 
-    static_assert(instrument::is_instrument_provider_v<Provider>,
-                  "Provider must satisfy InstrumentProvider requirements");
+    static_assert(instrument::is_base_provider_v<Provider>,
+                  "Provider must satisfy at least base provider requirements (spot, fx)");
 
 private:
     const Provider* provider_ = nullptr;

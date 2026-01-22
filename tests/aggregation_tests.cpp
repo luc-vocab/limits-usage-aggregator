@@ -880,3 +880,128 @@ TEST_F(MultiGroupAggregatorTest, KeysRetrieval) {
     auto underlyer_keys = delta_agg.keys<UnderlyerKey>();
     EXPECT_EQ(underlyer_keys.size(), 2u);
 }
+
+// ============================================================================
+// InstrumentProvider Traits Tests
+// ============================================================================
+
+TEST(InstrumentProviderTraitsTest, IndividualTraitsStaticInstrumentProvider) {
+    // StaticInstrumentProvider has all 6 methods
+    EXPECT_TRUE(instrument::has_spot_price_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_fx_rate_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_contract_size_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_underlyer_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_underlyer_spot_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_delta_v<instrument::StaticInstrumentProvider>);
+}
+
+TEST(InstrumentProviderTraitsTest, CombinedTraitsStaticInstrumentProvider) {
+    // StaticInstrumentProvider satisfies all provider levels
+    EXPECT_TRUE(instrument::is_base_provider_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::is_notional_provider_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::is_option_provider_v<instrument::StaticInstrumentProvider>);
+    EXPECT_TRUE(instrument::is_instrument_provider_v<instrument::StaticInstrumentProvider>);
+}
+
+TEST(InstrumentProviderTraitsTest, IndividualTraitsSimpleInstrumentProvider) {
+    // SimpleInstrumentProvider has only spot, fx, contract_size
+    EXPECT_TRUE(instrument::has_spot_price_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_fx_rate_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_TRUE(instrument::has_contract_size_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_FALSE(instrument::has_underlyer_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_FALSE(instrument::has_underlyer_spot_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_FALSE(instrument::has_delta_v<instrument::SimpleInstrumentProvider>);
+}
+
+TEST(InstrumentProviderTraitsTest, CombinedTraitsSimpleInstrumentProvider) {
+    // SimpleInstrumentProvider satisfies base and notional, but NOT option
+    EXPECT_TRUE(instrument::is_base_provider_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_TRUE(instrument::is_notional_provider_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_FALSE(instrument::is_option_provider_v<instrument::SimpleInstrumentProvider>);
+    EXPECT_FALSE(instrument::is_instrument_provider_v<instrument::SimpleInstrumentProvider>);
+}
+
+// ============================================================================
+// SimpleInstrumentProvider Tests
+// ============================================================================
+
+TEST(SimpleInstrumentProviderTest, DefaultValues) {
+    instrument::SimpleInstrumentProvider provider;
+
+    // Unknown symbols should return default values
+    EXPECT_DOUBLE_EQ(provider.get_spot_price("UNKNOWN"), 1.0);
+    EXPECT_DOUBLE_EQ(provider.get_fx_rate("UNKNOWN"), 1.0);
+    EXPECT_DOUBLE_EQ(provider.get_contract_size("UNKNOWN"), 1.0);
+}
+
+TEST(SimpleInstrumentProviderTest, SetAndGetValues) {
+    instrument::SimpleInstrumentProvider provider;
+    provider.set_spot_price("AAPL", 150.0);
+    provider.set_fx_rate("AAPL", 0.85);
+    provider.set_contract_size("AAPL", 100.0);
+
+    EXPECT_DOUBLE_EQ(provider.get_spot_price("AAPL"), 150.0);
+    EXPECT_DOUBLE_EQ(provider.get_fx_rate("AAPL"), 0.85);
+    EXPECT_DOUBLE_EQ(provider.get_contract_size("AAPL"), 100.0);
+}
+
+TEST(SimpleInstrumentProviderTest, CustomDefaults) {
+    instrument::SimpleInstrumentProvider provider;
+    provider.set_defaults(100.0, 0.75, 50.0);
+
+    EXPECT_DOUBLE_EQ(provider.get_spot_price("UNKNOWN"), 100.0);
+    EXPECT_DOUBLE_EQ(provider.get_fx_rate("UNKNOWN"), 0.75);
+    EXPECT_DOUBLE_EQ(provider.get_contract_size("UNKNOWN"), 50.0);
+}
+
+TEST(SimpleInstrumentProviderTest, ComputeNotional) {
+    instrument::SimpleInstrumentProvider provider;
+    provider.set_spot_price("AAPL", 150.0);
+    provider.set_fx_rate("AAPL", 1.0);
+    provider.set_contract_size("AAPL", 100.0);
+
+    // notional = quantity * contract_size * spot_price * fx_rate
+    // = 10 * 100 * 150 * 1.0 = 150000
+    double notional = instrument::compute_notional(provider, "AAPL", 10);
+    EXPECT_DOUBLE_EQ(notional, 150000.0);
+}
+
+// ============================================================================
+// NotionalMetrics with SimpleInstrumentProvider Tests
+// ============================================================================
+
+class NotionalMetricsSimpleProviderTest : public ::testing::Test {
+protected:
+    using Provider = instrument::SimpleInstrumentProvider;
+    metrics::NotionalMetrics<Provider> metrics;
+    Provider provider;
+
+    void SetUp() override {
+        provider.set_spot_price("AAPL", 100.0);
+        provider.set_fx_rate("AAPL", 1.0);
+        provider.set_contract_size("AAPL", 1.0);
+        metrics.set_instrument_provider(&provider);
+    }
+};
+
+TEST_F(NotionalMetricsSimpleProviderTest, BasicNotionalTracking) {
+    // add_order(symbol, strategy_id, portfolio_id, quantity)
+    metrics.add_order("AAPL", "STRAT1", "PORT1", 10);
+
+    // notional = 10 * 1.0 * 100.0 * 1.0 = 1000.0
+    EXPECT_DOUBLE_EQ(metrics.global_notional(), 1000.0);
+}
+
+TEST_F(NotionalMetricsSimpleProviderTest, MultipleOrders) {
+    metrics.add_order("AAPL", "STRAT1", "PORT1", 10);
+    metrics.add_order("AAPL", "STRAT1", "PORT1", 5);
+
+    EXPECT_DOUBLE_EQ(metrics.global_notional(), 1500.0);
+}
+
+TEST_F(NotionalMetricsSimpleProviderTest, RemoveOrder) {
+    metrics.add_order("AAPL", "STRAT1", "PORT1", 10);
+    metrics.remove_order("AAPL", "STRAT1", "PORT1", 10);
+
+    EXPECT_DOUBLE_EQ(metrics.global_notional(), 0.0);
+}
