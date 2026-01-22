@@ -677,10 +677,5 @@ private:
     }
 };
 
-// ============================================================================
-// Type aliases for common configurations with limits
-// ============================================================================
-// Note: These type aliases are now deprecated as they don't include Context.
-// Users should define their own type aliases with a specific Context type.
 
 } // namespace engine

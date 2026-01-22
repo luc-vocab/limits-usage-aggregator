@@ -70,7 +70,6 @@ cc_library(
 cc_library(
     name = "engine",
     hdrs = [
-        "risk_engine.hpp",
         "risk_engine_with_limits.hpp",
         "limits_config.hpp",
     ],
