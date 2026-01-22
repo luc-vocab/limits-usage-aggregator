@@ -3,7 +3,7 @@
 #include "../src/metrics/delta_metric.hpp"
 #include "../src/metrics/vega_metric.hpp"
 #include "../src/instrument/instrument.hpp"
-#include "../src/fix/fix_parser.hpp"
+#include "../src/fix/fix_messages.hpp"
 
 using namespace engine;
 using namespace fix;

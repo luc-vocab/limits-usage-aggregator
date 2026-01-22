@@ -2,7 +2,7 @@
 #include "../src/engine/risk_engine_with_limits.hpp"
 #include "../src/metrics/notional_metric.hpp"
 #include "../src/instrument/instrument.hpp"
-#include "../src/fix/fix_parser.hpp"
+#include "../src/fix/fix_messages.hpp"
 #include <memory>
 
 using namespace engine;

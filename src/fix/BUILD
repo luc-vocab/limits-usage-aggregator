@@ -6,7 +6,6 @@ cc_library(
     name = "fix",
     hdrs = [
         "fix_messages.hpp",
-        "fix_parser.hpp",
         "fix_types.hpp",
     ],
 )

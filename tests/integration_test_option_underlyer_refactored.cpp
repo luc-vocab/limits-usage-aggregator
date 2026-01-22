@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "../src/engine/risk_engine_with_limits.hpp"
 #include "../src/metrics/order_count_metric.hpp"
-#include "../src/fix/fix_parser.hpp"
+#include "../src/fix/fix_messages.hpp"
 
 using namespace engine;
 using namespace fix;
