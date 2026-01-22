@@ -46,7 +46,9 @@ public:
     // InstrumentProvider interface (for consistency, not used by OrderCount)
     // ========================================================================
 
-    void set_instrument_provider(instrument::InstrumentProvider* /*provider*/) {
+    // Template to accept any provider type (not used by OrderCountMetrics)
+    template<typename Provider>
+    void set_instrument_provider(const Provider* /*provider*/) {
         // OrderCountMetrics doesn't need InstrumentProvider
     }
 

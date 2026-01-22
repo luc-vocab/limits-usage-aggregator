@@ -21,15 +21,21 @@ namespace metrics {
 // Uses quantity-based tracking with lazy notional computation via InstrumentProvider.
 // Notional is computed as: quantity * contract_size * spot_price * fx_rate
 //
+// Template parameter Provider must satisfy the InstrumentProvider concept.
+//
 // Tracks quantities at:
 // - Global level (system-wide totals)
 // - Per-strategy level (if strategy_id is non-empty)
 // - Per-portfolio level (if portfolio_id is non-empty)
 //
 
+template<typename Provider>
 class NotionalMetrics {
+    static_assert(instrument::is_instrument_provider_v<Provider>,
+                  "Provider must satisfy InstrumentProvider requirements");
+
 private:
-    instrument::InstrumentProvider* provider_ = nullptr;
+    const Provider* provider_ = nullptr;
 
     // Track quantities per instrument
     // Key: symbol, Value: quantity
@@ -47,17 +53,17 @@ private:
         if (!provider_) {
             return 0.0;
         }
-        return provider_->compute_notional(symbol, quantity);
+        return instrument::compute_notional(*provider_, symbol, quantity);
     }
 
 public:
     NotionalMetrics() = default;
 
-    void set_instrument_provider(instrument::InstrumentProvider* provider) {
+    void set_instrument_provider(const Provider* provider) {
         provider_ = provider;
     }
 
-    instrument::InstrumentProvider* instrument_provider() const {
+    const Provider* instrument_provider() const {
         return provider_;
     }
 
@@ -78,7 +84,7 @@ public:
     void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty);
 
     // ========================================================================
-    // Legacy interface (for backward compatibility and direct usage)
+    // Direct interface (for backward compatibility and direct usage)
     // ========================================================================
 
     void add_order(const std::string& symbol, const std::string& strategy_id,
@@ -229,19 +235,23 @@ private:
 
 namespace metrics {
 
-inline void NotionalMetrics::on_order_added(const engine::TrackedOrder& order) {
+template<typename Provider>
+void NotionalMetrics<Provider>::on_order_added(const engine::TrackedOrder& order) {
     add_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-inline void NotionalMetrics::on_order_removed(const engine::TrackedOrder& order) {
+template<typename Provider>
+void NotionalMetrics<Provider>::on_order_removed(const engine::TrackedOrder& order) {
     remove_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-inline void NotionalMetrics::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+template<typename Provider>
+void NotionalMetrics<Provider>::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
     update_order(order.symbol, order.strategy_id, order.portfolio_id, old_qty, order.leaves_qty);
 }
 
-inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+template<typename Provider>
+void NotionalMetrics<Provider>::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
     partial_fill(order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
 }
 
@@ -259,11 +269,11 @@ inline void NotionalMetrics::on_partial_fill(const engine::TrackedOrder& order, 
 
 namespace engine {
 
-template<typename Derived>
-class AccessorMixin<Derived, metrics::NotionalMetrics> {
+template<typename Derived, typename Provider>
+class AccessorMixin<Derived, metrics::NotionalMetrics<Provider>> {
 protected:
-    const metrics::NotionalMetrics& notional_metrics_() const {
-        return static_cast<const Derived*>(this)->template get_metric<metrics::NotionalMetrics>();
+    const metrics::NotionalMetrics<Provider>& notional_metrics_() const {
+        return static_cast<const Derived*>(this)->template get_metric<metrics::NotionalMetrics<Provider>>();
     }
 
 public:

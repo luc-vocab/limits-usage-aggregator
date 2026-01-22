@@ -15,7 +15,7 @@ template<typename T, typename... Types>
 inline constexpr bool contains_type_v = contains_type<T, Types...>::value;
 
 // Forward declaration of the generic engine
-template<typename... Metrics>
+template<typename Provider, typename... Metrics>
 class GenericRiskAggregationEngine;
 
 // ============================================================================

@@ -136,10 +136,12 @@ OrderStep unsolicited_cancel(const std::string& order_id) {
 class UnderlyerLimitEngine {
 private:
     // Use the new engine with limits support
+    using Provider = instrument::StaticInstrumentProvider;
     RiskAggregationEngineWithLimits<
-        metrics::DeltaMetrics,
+        Provider,
+        metrics::DeltaMetrics<Provider>,
         metrics::OrderCountMetrics,
-        metrics::NotionalMetrics
+        metrics::NotionalMetrics<Provider>
     > risk_engine_;
 
     // Track pending orders by ID for message construction

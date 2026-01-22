@@ -2,59 +2,73 @@
 
 #include <string>
 #include <unordered_map>
-#include <stdexcept>
 #include <cstdint>
+#include <type_traits>
 
 namespace instrument {
 
 // ============================================================================
-// InstrumentProvider - Interface for accessing instrument market data
+// InstrumentProvider Concept (C++17 compatible via SFINAE)
 // ============================================================================
 //
-// This interface provides access to instrument-specific data needed for
-// computing notional values and delta exposure. Implementations can be:
-// - StaticInstrumentProvider: Pre-loaded instrument data (for testing)
-// - MarketDataInstrumentProvider: Live market data feed
-// - CachedInstrumentProvider: Cached/refreshable market data
+// Any type satisfying the InstrumentProvider concept must provide:
+//   - double get_spot_price(const std::string& symbol) const
+//   - double get_fx_rate(const std::string& symbol) const
+//   - double get_contract_size(const std::string& symbol) const
+//   - std::string get_underlyer(const std::string& symbol) const
+//   - double get_underlyer_spot(const std::string& symbol) const
+//   - double get_delta(const std::string& symbol) const
+//
+// No virtual functions - compile-time polymorphism via templates.
 //
 
-class InstrumentProvider {
-public:
-    virtual ~InstrumentProvider() = default;
+// Type trait to check if a type satisfies InstrumentProvider requirements
+template<typename T, typename = void>
+struct is_instrument_provider : std::false_type {};
 
-    // Core instrument data
-    virtual double get_spot_price(const std::string& symbol) const = 0;
-    virtual double get_fx_rate(const std::string& symbol) const = 0;  // Returns 1.0 for USD
-    virtual double get_contract_size(const std::string& symbol) const = 0;
-    virtual std::string get_underlyer(const std::string& symbol) const = 0;
-    virtual double get_underlyer_spot(const std::string& symbol) const = 0;
-    virtual double get_delta(const std::string& symbol) const = 0;
+template<typename T>
+struct is_instrument_provider<T, std::void_t<
+    decltype(std::declval<const T&>().get_spot_price(std::declval<const std::string&>())),
+    decltype(std::declval<const T&>().get_fx_rate(std::declval<const std::string&>())),
+    decltype(std::declval<const T&>().get_contract_size(std::declval<const std::string&>())),
+    decltype(std::declval<const T&>().get_underlyer(std::declval<const std::string&>())),
+    decltype(std::declval<const T&>().get_underlyer_spot(std::declval<const std::string&>())),
+    decltype(std::declval<const T&>().get_delta(std::declval<const std::string&>()))
+>> : std::true_type {};
 
-    // Computed notional: quantity * contract_size * spot_price * fx_rate
-    double compute_notional(const std::string& symbol, int64_t quantity) const {
-        return static_cast<double>(quantity)
-             * get_contract_size(symbol)
-             * get_spot_price(symbol)
-             * get_fx_rate(symbol);
-    }
-
-    // Computed delta exposure: quantity * delta * contract_size * underlyer_spot * fx_rate
-    double compute_delta_exposure(const std::string& symbol, int64_t quantity) const {
-        return static_cast<double>(quantity)
-             * get_delta(symbol)
-             * get_contract_size(symbol)
-             * get_underlyer_spot(symbol)
-             * get_fx_rate(symbol);
-    }
-};
+template<typename T>
+inline constexpr bool is_instrument_provider_v = is_instrument_provider<T>::value;
 
 // ============================================================================
-// StaticInstrumentProvider - Simple implementation with pre-loaded data
+// Free function templates for computing values from any provider
 // ============================================================================
-//
-// Useful for testing and scenarios where instrument data doesn't change
-// during the session.
-//
+
+// Compute notional: quantity * contract_size * spot_price * fx_rate
+template<typename Provider>
+double compute_notional(const Provider& provider, const std::string& symbol, int64_t quantity) {
+    static_assert(is_instrument_provider_v<Provider>,
+                  "Provider must satisfy InstrumentProvider requirements");
+    return static_cast<double>(quantity)
+         * provider.get_contract_size(symbol)
+         * provider.get_spot_price(symbol)
+         * provider.get_fx_rate(symbol);
+}
+
+// Compute delta exposure: quantity * delta * contract_size * underlyer_spot * fx_rate
+template<typename Provider>
+double compute_delta_exposure(const Provider& provider, const std::string& symbol, int64_t quantity) {
+    static_assert(is_instrument_provider_v<Provider>,
+                  "Provider must satisfy InstrumentProvider requirements");
+    return static_cast<double>(quantity)
+         * provider.get_delta(symbol)
+         * provider.get_contract_size(symbol)
+         * provider.get_underlyer_spot(symbol)
+         * provider.get_fx_rate(symbol);
+}
+
+// ============================================================================
+// InstrumentData - Data structure for instrument properties
+// ============================================================================
 
 struct InstrumentData {
     double spot_price = 0.0;
@@ -65,7 +79,15 @@ struct InstrumentData {
     double delta = 1.0;             // 1.0 for equities/futures
 };
 
-class StaticInstrumentProvider : public InstrumentProvider {
+// ============================================================================
+// StaticInstrumentProvider - Concrete implementation with pre-loaded data
+// ============================================================================
+//
+// Useful for testing and scenarios where instrument data doesn't change
+// during the session. No virtual functions - all methods are non-virtual.
+//
+
+class StaticInstrumentProvider {
 private:
     std::unordered_map<std::string, InstrumentData> instruments_;
     InstrumentData default_data_;
@@ -169,8 +191,11 @@ public:
         instruments_.clear();
     }
 
-    // InstrumentProvider interface implementation
-    double get_spot_price(const std::string& symbol) const override {
+    // ========================================================================
+    // InstrumentProvider interface (non-virtual)
+    // ========================================================================
+
+    double get_spot_price(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.spot_price;
@@ -178,7 +203,7 @@ public:
         return default_data_.spot_price;
     }
 
-    double get_fx_rate(const std::string& symbol) const override {
+    double get_fx_rate(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.fx_rate;
@@ -186,7 +211,7 @@ public:
         return default_data_.fx_rate;
     }
 
-    double get_contract_size(const std::string& symbol) const override {
+    double get_contract_size(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.contract_size;
@@ -194,7 +219,7 @@ public:
         return default_data_.contract_size;
     }
 
-    std::string get_underlyer(const std::string& symbol) const override {
+    std::string get_underlyer(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.underlyer;
@@ -202,7 +227,7 @@ public:
         return symbol;  // Default: symbol is its own underlyer
     }
 
-    double get_underlyer_spot(const std::string& symbol) const override {
+    double get_underlyer_spot(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.underlyer_spot;
@@ -210,13 +235,26 @@ public:
         return default_data_.underlyer_spot;
     }
 
-    double get_delta(const std::string& symbol) const override {
+    double get_delta(const std::string& symbol) const {
         auto it = instruments_.find(symbol);
         if (it != instruments_.end()) {
             return it->second.delta;
         }
         return default_data_.delta;
     }
+
+    // Convenience methods that use the free function templates
+    double compute_notional(const std::string& symbol, int64_t quantity) const {
+        return instrument::compute_notional(*this, symbol, quantity);
+    }
+
+    double compute_delta_exposure(const std::string& symbol, int64_t quantity) const {
+        return instrument::compute_delta_exposure(*this, symbol, quantity);
+    }
 };
+
+// Static assertion to verify StaticInstrumentProvider satisfies the concept
+static_assert(is_instrument_provider_v<StaticInstrumentProvider>,
+              "StaticInstrumentProvider must satisfy InstrumentProvider requirements");
 
 } // namespace instrument

@@ -215,8 +215,9 @@ TEST(AggregationEngineTest, Clear) {
 // Test fixture with InstrumentProvider for delta computation
 class DeltaMetricsTest : public ::testing::Test {
 protected:
-    metrics::DeltaMetrics metrics;
-    instrument::StaticInstrumentProvider provider;
+    using Provider = instrument::StaticInstrumentProvider;
+    metrics::DeltaMetrics<Provider> metrics;
+    Provider provider;
 
     void SetUp() override {
         // Add test instruments with delta=1.0 for simple math
@@ -346,8 +347,9 @@ TEST_F(OrderCountMetricsTest, QuotedInstrumentsDecrement) {
 
 class NotionalMetricsTest : public ::testing::Test {
 protected:
-    metrics::NotionalMetrics metrics;
-    instrument::StaticInstrumentProvider provider;
+    using Provider = instrument::StaticInstrumentProvider;
+    metrics::NotionalMetrics<Provider> metrics;
+    Provider provider;
 
     void SetUp() override {
         // Add test instruments
@@ -431,21 +433,23 @@ protected:
     }
 };
 
-TEST(GenericEngineTest, EmptyEngine) {
-    // Engine with no metrics
-    engine::GenericRiskAggregationEngine<> engine;
+TEST_F(GenericEngineTestFixture, EmptyEngine) {
+    // Engine with no metrics - still needs Provider
+    using Provider = instrument::StaticInstrumentProvider;
+    engine::GenericRiskAggregationEngine<Provider> engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 0u);
     EXPECT_EQ(engine.active_order_count(), 0u);
 }
 
 TEST_F(GenericEngineTestFixture, DeltaOnlyEngine) {
+    using Provider = instrument::StaticInstrumentProvider;
     engine::DeltaOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
     EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
 
     // Accessor methods from mixin should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -471,12 +475,13 @@ TEST_F(GenericEngineTestFixture, DeltaOnlyEngine) {
 }
 
 TEST_F(GenericEngineTestFixture, OrderCountOnlyEngine) {
+    using Provider = instrument::StaticInstrumentProvider;
     engine::OrderCountOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
     EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
 
     // Accessor methods from mixin should be available
     EXPECT_EQ(engine.bid_order_count("AAPL"), 0);
@@ -501,12 +506,13 @@ TEST_F(GenericEngineTestFixture, OrderCountOnlyEngine) {
 }
 
 TEST_F(GenericEngineTestFixture, NotionalOnlyEngine) {
+    using Provider = instrument::StaticInstrumentProvider;
     engine::NotionalOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
     EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
 
     // Accessor methods from mixin should be available
     EXPECT_DOUBLE_EQ(engine.global_notional(), 0.0);
@@ -533,17 +539,19 @@ TEST_F(GenericEngineTestFixture, NotionalOnlyEngine) {
 
 TEST_F(GenericEngineTestFixture, CustomMetricCombination) {
     // Engine with only Delta and Notional metrics
+    using Provider = instrument::StaticInstrumentProvider;
     using DeltaNotionalEngine = engine::GenericRiskAggregationEngine<
-        metrics::DeltaMetrics,
-        metrics::NotionalMetrics
+        Provider,
+        metrics::DeltaMetrics<Provider>,
+        metrics::NotionalMetrics<Provider>
     >;
 
     DeltaNotionalEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 2u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
     EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
 
     // Both delta and notional accessors should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -570,12 +578,13 @@ TEST_F(GenericEngineTestFixture, CustomMetricCombination) {
 }
 
 TEST_F(GenericEngineTestFixture, StandardEngineHasAllAccessors) {
+    using Provider = instrument::StaticInstrumentProvider;
     engine::RiskAggregationEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 3u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
     EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics>());
+    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
 
     // All accessor methods should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -603,12 +612,13 @@ TEST_F(GenericEngineTestFixture, StandardEngineHasAllAccessors) {
 }
 
 TEST_F(GenericEngineTestFixture, GetMetricAccess) {
+    using Provider = instrument::StaticInstrumentProvider;
     engine::RiskAggregationEngine engine(&provider);
 
     // Direct metric access via get_metric
-    auto& delta = engine.get_metric<metrics::DeltaMetrics>();
+    auto& delta = engine.get_metric<metrics::DeltaMetrics<Provider>>();
     auto& order_count = engine.get_metric<metrics::OrderCountMetrics>();
-    auto& notional = engine.get_metric<metrics::NotionalMetrics>();
+    auto& notional = engine.get_metric<metrics::NotionalMetrics<Provider>>();
 
     // Process an order
     fix::NewOrderSingle order;

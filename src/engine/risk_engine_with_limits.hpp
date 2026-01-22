@@ -15,14 +15,19 @@ namespace engine {
 // Wraps a GenericRiskAggregationEngine and adds runtime limit configuration
 // and breach checking capabilities.
 //
+// Template parameters:
+//   - Provider: The InstrumentProvider type
+//   - Metrics...: Zero or more metric types
+//
 // Supports limits for:
 // - Quoted instruments count per underlyer
 // - Gross/net delta per underlyer or global
 // - Notional per strategy/portfolio
 //
 // Example usage:
-//   using EngineWithLimits = RiskAggregationEngineWithLimits<
-//       metrics::DeltaMetrics, metrics::OrderCountMetrics>;
+//   using Provider = instrument::StaticInstrumentProvider;
+//   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider,
+//       metrics::DeltaMetrics<Provider>, metrics::OrderCountMetrics>;
 //
 //   EngineWithLimits engine;
 //   engine.set_quoted_instruments_limit("AAPL", 5);
@@ -31,10 +36,10 @@ namespace engine {
 //   }
 //
 
-template<typename... Metrics>
+template<typename Provider, typename... Metrics>
 class RiskAggregationEngineWithLimits {
 private:
-    GenericRiskAggregationEngine<Metrics...> engine_;
+    GenericRiskAggregationEngine<Provider, Metrics...> engine_;
 
     // Limit stores for different metrics
     StringLimitStore quoted_instruments_limits_;
@@ -44,12 +49,27 @@ private:
     StringLimitStore portfolio_notional_limits_;
 
 public:
+    using provider_type = Provider;
+
+    RiskAggregationEngineWithLimits() = default;
+
+    explicit RiskAggregationEngineWithLimits(const Provider* provider)
+        : engine_(provider) {}
+
     // ========================================================================
     // Forwarding to underlying engine
     // ========================================================================
 
-    GenericRiskAggregationEngine<Metrics...>& engine() { return engine_; }
-    const GenericRiskAggregationEngine<Metrics...>& engine() const { return engine_; }
+    GenericRiskAggregationEngine<Provider, Metrics...>& engine() { return engine_; }
+    const GenericRiskAggregationEngine<Provider, Metrics...>& engine() const { return engine_; }
+
+    void set_instrument_provider(const Provider* provider) {
+        engine_.set_instrument_provider(provider);
+    }
+
+    const Provider* instrument_provider() const {
+        return engine_.instrument_provider();
+    }
 
     // Forward all message handlers
     void on_new_order_single(const fix::NewOrderSingle& msg) {
@@ -105,7 +125,7 @@ public:
 
     template<typename Metric>
     static constexpr bool has_metric() {
-        return GenericRiskAggregationEngine<Metrics...>::template has_metric<Metric>();
+        return GenericRiskAggregationEngine<Provider, Metrics...>::template has_metric<Metric>();
     }
 
     // ========================================================================
@@ -174,7 +194,7 @@ public:
     }
 
     // ========================================================================
-    // Delta Limits (requires DeltaMetrics)
+    // Delta Limits (requires DeltaMetrics<Provider>)
     // ========================================================================
 
     void set_gross_delta_limit(const std::string& underlyer, double limit) {
@@ -211,47 +231,47 @@ public:
 
     // Check if adding delta_exposure would breach gross delta limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, bool>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, bool>
     would_breach_gross_delta_limit(const std::string& underlyer, double delta_exposure) const {
-        double current = get_metric<metrics::DeltaMetrics>().underlyer_gross_delta(underlyer);
+        double current = get_metric<metrics::DeltaMetrics<Provider>>().underlyer_gross_delta(underlyer);
         return gross_delta_limits_.would_breach(underlyer, current, std::abs(delta_exposure));
     }
 
     // Check if adding signed_delta would breach net delta limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, bool>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, bool>
     would_breach_net_delta_limit(const std::string& underlyer, double signed_delta) const {
-        double current = get_metric<metrics::DeltaMetrics>().underlyer_net_delta(underlyer);
+        double current = get_metric<metrics::DeltaMetrics<Provider>>().underlyer_net_delta(underlyer);
         return net_delta_limits_.would_breach(underlyer, current, signed_delta);
     }
 
     // Forwarded accessors for DeltaMetrics
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
     global_gross_delta() const {
-        return get_metric<metrics::DeltaMetrics>().global_gross_delta();
+        return get_metric<metrics::DeltaMetrics<Provider>>().global_gross_delta();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
     global_net_delta() const {
-        return get_metric<metrics::DeltaMetrics>().global_net_delta();
+        return get_metric<metrics::DeltaMetrics<Provider>>().global_net_delta();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
     underlyer_gross_delta(const std::string& underlyer) const {
-        return get_metric<metrics::DeltaMetrics>().underlyer_gross_delta(underlyer);
+        return get_metric<metrics::DeltaMetrics<Provider>>().underlyer_gross_delta(underlyer);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
     underlyer_net_delta(const std::string& underlyer) const {
-        return get_metric<metrics::DeltaMetrics>().underlyer_net_delta(underlyer);
+        return get_metric<metrics::DeltaMetrics<Provider>>().underlyer_net_delta(underlyer);
     }
 
     // ========================================================================
-    // Notional Limits (requires NotionalMetrics)
+    // Notional Limits (requires NotionalMetrics<Provider>)
     // ========================================================================
 
     void set_strategy_notional_limit(const std::string& strategy_id, double limit) {
@@ -280,37 +300,37 @@ public:
 
     // Check if adding notional would breach strategy limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics, Metrics...>, bool>
+    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, bool>
     would_breach_strategy_notional_limit(const std::string& strategy_id, double notional) const {
-        double current = get_metric<metrics::NotionalMetrics>().strategy_notional(strategy_id);
+        double current = get_metric<metrics::NotionalMetrics<Provider>>().strategy_notional(strategy_id);
         return strategy_notional_limits_.would_breach(strategy_id, current, notional);
     }
 
     // Check if adding notional would breach portfolio limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics, Metrics...>, bool>
+    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, bool>
     would_breach_portfolio_notional_limit(const std::string& portfolio_id, double notional) const {
-        double current = get_metric<metrics::NotionalMetrics>().portfolio_notional(portfolio_id);
+        double current = get_metric<metrics::NotionalMetrics<Provider>>().portfolio_notional(portfolio_id);
         return portfolio_notional_limits_.would_breach(portfolio_id, current, notional);
     }
 
     // Forwarded accessors for NotionalMetrics
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
     global_notional() const {
-        return get_metric<metrics::NotionalMetrics>().global_notional();
+        return get_metric<metrics::NotionalMetrics<Provider>>().global_notional();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
     strategy_notional(const std::string& strategy_id) const {
-        return get_metric<metrics::NotionalMetrics>().strategy_notional(strategy_id);
+        return get_metric<metrics::NotionalMetrics<Provider>>().strategy_notional(strategy_id);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics, Metrics...>, double>
+    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
     portfolio_notional(const std::string& portfolio_id) const {
-        return get_metric<metrics::NotionalMetrics>().portfolio_notional(portfolio_id);
+        return get_metric<metrics::NotionalMetrics<Provider>>().portfolio_notional(portfolio_id);
     }
 };
 
@@ -318,16 +338,29 @@ public:
 // Type aliases for common configurations with limits
 // ============================================================================
 
+using DefaultProvider = instrument::StaticInstrumentProvider;
+
 // Standard engine with all metrics and limits
 using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithLimits<
-    metrics::DeltaMetrics,
+    DefaultProvider,
+    metrics::DeltaMetrics<DefaultProvider>,
     metrics::OrderCountMetrics,
-    metrics::NotionalMetrics
+    metrics::NotionalMetrics<DefaultProvider>
 >;
 
 // Order count only with limits (useful for quoted instrument limits)
 using OrderCountEngineWithLimits = RiskAggregationEngineWithLimits<
+    DefaultProvider,
     metrics::OrderCountMetrics
+>;
+
+// Template alias for custom provider types
+template<typename Provider>
+using RiskAggregationEngineWithAllLimitsUsing = RiskAggregationEngineWithLimits<
+    Provider,
+    metrics::DeltaMetrics<Provider>,
+    metrics::OrderCountMetrics,
+    metrics::NotionalMetrics<Provider>
 >;
 
 } // namespace engine
