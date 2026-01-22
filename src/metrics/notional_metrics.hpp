@@ -3,8 +3,8 @@
 #include "../aggregation/multi_group_aggregator.hpp"
 #include "../fix/fix_types.hpp"
 #include "../instrument/instrument.hpp"
+#include <cmath>
 #include <unordered_map>
-#include <set>
 
 // Forward declarations
 namespace engine {
@@ -41,12 +41,13 @@ private:
     // Key: symbol, Value: quantity
     std::unordered_map<std::string, int64_t> instrument_quantities_;
 
-    // Track which instruments belong to which strategy/portfolio
-    std::unordered_map<std::string, std::set<std::string>> strategy_instruments_;
-    std::unordered_map<std::string, std::set<std::string>> portfolio_instruments_;
+    // Track notional per strategy/portfolio
+    std::unordered_map<std::string, double> strategy_notional_;
+    std::unordered_map<std::string, double> portfolio_notional_;
 
-    // Global quantity total
+    // Global totals
     int64_t global_qty_ = 0;
+    double global_notional_ = 0.0;
 
     // Compute notional for a single instrument
     double compute_instrument_notional(const std::string& symbol, int64_t quantity) const {
@@ -92,12 +93,15 @@ public:
         instrument_quantities_[symbol] += quantity;
         global_qty_ += quantity;
 
-        // Track strategy/portfolio mappings
+        // Compute notional for this quantity and update totals
+        double notional = compute_instrument_notional(symbol, quantity);
+        global_notional_ += notional;
+
         if (!strategy_id.empty()) {
-            strategy_instruments_[strategy_id].insert(symbol);
+            strategy_notional_[strategy_id] += notional;
         }
         if (!portfolio_id.empty()) {
-            portfolio_instruments_[portfolio_id].insert(symbol);
+            portfolio_notional_[portfolio_id] += notional;
         }
     }
 
@@ -107,6 +111,18 @@ public:
         if (it != instrument_quantities_.end()) {
             it->second -= quantity;
             global_qty_ -= quantity;
+
+            // Compute notional for this quantity and update totals
+            double notional = compute_instrument_notional(symbol, quantity);
+            global_notional_ -= notional;
+
+            if (!strategy_id.empty()) {
+                strategy_notional_[strategy_id] -= notional;
+            }
+            if (!portfolio_id.empty()) {
+                portfolio_notional_[portfolio_id] -= notional;
+            }
+
             if (it->second <= 0) {
                 instrument_quantities_.erase(it);
                 cleanup_mappings(symbol, strategy_id, portfolio_id);
@@ -126,7 +142,7 @@ public:
     }
 
     // ========================================================================
-    // Accessors - compute notional values lazily using InstrumentProvider
+    // Accessors - O(1) lookups of precomputed notional values
     // ========================================================================
 
     // Quantity accessors
@@ -137,50 +153,24 @@ public:
         return it != instrument_quantities_.end() ? it->second : 0;
     }
 
-    // Notional accessors (computed lazily)
+    // Notional accessors (O(1) lookups)
     double global_notional() const {
-        double total = 0.0;
-        for (const auto& [symbol, qty] : instrument_quantities_) {
-            total += compute_instrument_notional(symbol, qty);
-        }
-        return total;
+        return global_notional_;
     }
 
     double strategy_notional(const std::string& strategy_id) const {
-        auto it = strategy_instruments_.find(strategy_id);
-        if (it == strategy_instruments_.end()) {
-            return 0.0;
-        }
-
-        double total = 0.0;
-        for (const auto& symbol : it->second) {
-            auto qty_it = instrument_quantities_.find(symbol);
-            if (qty_it != instrument_quantities_.end()) {
-                total += compute_instrument_notional(symbol, qty_it->second);
-            }
-        }
-        return total;
+        auto it = strategy_notional_.find(strategy_id);
+        return it != strategy_notional_.end() ? it->second : 0.0;
     }
 
     double portfolio_notional(const std::string& portfolio_id) const {
-        auto it = portfolio_instruments_.find(portfolio_id);
-        if (it == portfolio_instruments_.end()) {
-            return 0.0;
-        }
-
-        double total = 0.0;
-        for (const auto& symbol : it->second) {
-            auto qty_it = instrument_quantities_.find(symbol);
-            if (qty_it != instrument_quantities_.end()) {
-                total += compute_instrument_notional(symbol, qty_it->second);
-            }
-        }
-        return total;
+        auto it = portfolio_notional_.find(portfolio_id);
+        return it != portfolio_notional_.end() ? it->second : 0.0;
     }
 
     std::vector<aggregation::StrategyKey> strategies() const {
         std::vector<aggregation::StrategyKey> result;
-        for (const auto& [strategy_id, _] : strategy_instruments_) {
+        for (const auto& [strategy_id, _] : strategy_notional_) {
             result.push_back(aggregation::StrategyKey{strategy_id});
         }
         return result;
@@ -188,7 +178,7 @@ public:
 
     std::vector<aggregation::PortfolioKey> portfolios() const {
         std::vector<aggregation::PortfolioKey> result;
-        for (const auto& [portfolio_id, _] : portfolio_instruments_) {
+        for (const auto& [portfolio_id, _] : portfolio_notional_) {
             result.push_back(aggregation::PortfolioKey{portfolio_id});
         }
         return result;
@@ -196,33 +186,29 @@ public:
 
     void clear() {
         instrument_quantities_.clear();
-        strategy_instruments_.clear();
-        portfolio_instruments_.clear();
+        strategy_notional_.clear();
+        portfolio_notional_.clear();
         global_qty_ = 0;
+        global_notional_ = 0.0;
     }
 
 private:
-    void cleanup_mappings(const std::string& symbol, const std::string& strategy_id,
+    void cleanup_mappings([[maybe_unused]] const std::string& symbol,
+                          const std::string& strategy_id,
                           const std::string& portfolio_id) {
-        // Clean up strategy mapping
+        // Clean up strategy entry if notional is zero (within floating point tolerance)
         if (!strategy_id.empty()) {
-            auto it = strategy_instruments_.find(strategy_id);
-            if (it != strategy_instruments_.end()) {
-                it->second.erase(symbol);
-                if (it->second.empty()) {
-                    strategy_instruments_.erase(it);
-                }
+            auto it = strategy_notional_.find(strategy_id);
+            if (it != strategy_notional_.end() && std::abs(it->second) < 1e-9) {
+                strategy_notional_.erase(it);
             }
         }
 
-        // Clean up portfolio mapping
+        // Clean up portfolio entry if notional is zero (within floating point tolerance)
         if (!portfolio_id.empty()) {
-            auto it = portfolio_instruments_.find(portfolio_id);
-            if (it != portfolio_instruments_.end()) {
-                it->second.erase(symbol);
-                if (it->second.empty()) {
-                    portfolio_instruments_.erase(it);
-                }
+            auto it = portfolio_notional_.find(portfolio_id);
+            if (it != portfolio_notional_.end() && std::abs(it->second) < 1e-9) {
+                portfolio_notional_.erase(it);
             }
         }
     }
