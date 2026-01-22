@@ -301,11 +301,11 @@ public:
         instruments_[symbol] = data;
     }
 
-    // Add equity (simple case: contract_size=1, fx_rate=1, delta=1)
-    void add_equity(const std::string& symbol, double spot_price) {
+    // Add equity (simple case: contract_size=1, delta=1)
+    void add_equity(const std::string& symbol, double spot_price, double fx_rate = 1.0) {
         InstrumentData data;
         data.spot_price = spot_price;
-        data.fx_rate = 1.0;
+        data.fx_rate = fx_rate;
         data.contract_size = 1.0;
         data.underlyer = symbol;
         data.underlyer_spot = spot_price;

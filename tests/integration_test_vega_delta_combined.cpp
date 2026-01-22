@@ -97,6 +97,19 @@ StaticInstrumentProvider create_vega_delta_provider() {
     // MSFT_C300: Call, spot=$8.00, underlyer_spot=$300, delta=0.6, vega=0.30, contract_size=100
     provider.add_option("MSFT_C300", "MSFT", 8.0, 300.0, 0.6, 100.0, 1.0, 0.30);
 
+    // HKD-denominated instruments (Hong Kong market)
+    // fx_rate = 0.128 (1 HKD = 0.128 USD, approximately 7.8 HKD per USD)
+    constexpr double HKD_TO_USD = 0.128;
+
+    // Tencent stock: spot=HKD 350, delta=1, vega=0, contract_size=1
+    provider.add_equity("0700.HK", 350.0, HKD_TO_USD);  // spot=HKD 350
+
+    // Tencent options with vega (HKD-denominated)
+    // 0700_C350: Call, spot=HKD 25, underlyer_spot=HKD 350, delta=0.55, vega=0.30, contract_size=100
+    provider.add_option("0700_C350", "0700.HK", 25.0, 350.0, 0.55, 100.0, HKD_TO_USD, 0.30);
+    // 0700_P350: Put, spot=HKD 20, underlyer_spot=HKD 350, delta=-0.45, vega=0.28, contract_size=100
+    provider.add_option("0700_P350", "0700.HK", 20.0, 350.0, -0.45, 100.0, HKD_TO_USD, 0.28);
+
     return provider;
 }
 
@@ -146,6 +159,12 @@ protected:
         engine.set_limit<UnderlyerNetDelta>(UnderlyerKey{"MSFT"}, MAX_NET_DELTA);
         engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"MSFT"}, MAX_GROSS_VEGA);
         engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"MSFT"}, MAX_NET_VEGA);
+
+        // Set limits for 0700.HK underlyer (HKD-denominated)
+        engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"0700.HK"}, MAX_GROSS_DELTA);
+        engine.set_limit<UnderlyerNetDelta>(UnderlyerKey{"0700.HK"}, MAX_NET_DELTA);
+        engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"0700.HK"}, MAX_GROSS_VEGA);
+        engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"0700.HK"}, MAX_NET_VEGA);
     }
 
     // Accessors
@@ -548,4 +567,168 @@ TEST_F(VegaDeltaCombinedTest, VerifyVegaComputationFormula) {
     // Stock has zero vega
     double stock_vega = expected_vega_exposure("AAPL", 1000);
     EXPECT_DOUBLE_EQ(stock_vega, 0.0) << "Stock vega = 0 regardless of quantity";
+}
+
+// ============================================================================
+// Test: Non-USD currency (HKD) option with fx_rate conversion
+// ============================================================================
+
+TEST_F(VegaDeltaCombinedTest, HKDOptionWithFxRateConversion) {
+    // 0700_C350 (Tencent call): delta=0.55, vega=0.30, contract_size=100,
+    //                           underlyer_spot=HKD 350, fx_rate=0.128 (HKD->USD)
+    //
+    // For BID qty=10:
+    //   delta_exposure = 10 * 0.55 * 100 * 350 * 0.128 = 24,640 USD
+    //   vega_exposure = 10 * 0.30 * 100 * 350 * 0.128 = 13,440 USD
+    //
+    // The fx_rate converts the HKD-denominated exposure to USD
+
+    constexpr double HKD_TO_USD = 0.128;
+
+    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
+    engine.on_execution_report(create_ack("ORD001", 10));
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0));
+
+    // Verify delta exposure includes fx_rate
+    // delta = 10 * 0.55 * 100 * 350 * 0.128 = 24,640
+    double expected_delta = 10 * 0.55 * 100 * 350.0 * HKD_TO_USD;
+    EXPECT_DOUBLE_EQ(expected_delta, 24640.0) << "Expected delta calculation";
+    EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 24640.0) << "HKD option delta with fx_rate";
+    EXPECT_DOUBLE_EQ(net_delta("0700.HK"), 24640.0) << "BID = positive net delta";
+
+    // Verify vega exposure includes fx_rate
+    // vega = 10 * 0.30 * 100 * 350 * 0.128 = 13,440
+    double expected_vega = 10 * 0.30 * 100 * 350.0 * HKD_TO_USD;
+    EXPECT_DOUBLE_EQ(expected_vega, 13440.0) << "Expected vega calculation";
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 13440.0) << "HKD option vega with fx_rate";
+    EXPECT_DOUBLE_EQ(net_vega("0700.HK"), 13440.0) << "BID = positive net vega";
+}
+
+// ============================================================================
+// Test: HKD stock has delta exposure scaled by fx_rate, zero vega
+// ============================================================================
+
+TEST_F(VegaDeltaCombinedTest, HKDStockWithFxRateConversion) {
+    // 0700.HK stock: delta=1, vega=0, contract_size=1,
+    //                spot=HKD 350, fx_rate=0.128 (HKD->USD)
+    //
+    // For BID qty=100:
+    //   delta_exposure = 100 * 1 * 1 * 350 * 0.128 = 4,480 USD
+    //   vega_exposure = 100 * 0 * 1 * 350 * 0.128 = 0 (stocks have zero vega)
+
+    constexpr double HKD_TO_USD = 0.128;
+
+    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0));
+
+    // Verify delta exposure includes fx_rate
+    // delta = 100 * 1 * 1 * 350 * 0.128 = 4,480
+    double expected_delta = 100 * 1.0 * 1 * 350.0 * HKD_TO_USD;
+    EXPECT_DOUBLE_EQ(expected_delta, 4480.0) << "Expected delta calculation";
+    EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 4480.0) << "HKD stock delta with fx_rate";
+    EXPECT_DOUBLE_EQ(net_delta("0700.HK"), 4480.0) << "BID = positive net delta";
+
+    // Stock has zero vega regardless of fx_rate
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 0.0) << "HKD stock has ZERO vega";
+    EXPECT_DOUBLE_EQ(net_vega("0700.HK"), 0.0) << "HKD stock has ZERO net vega";
+}
+
+// ============================================================================
+// Test: Combined HKD stock and option positions
+// ============================================================================
+
+TEST_F(VegaDeltaCombinedTest, CombinedHKDStockAndOption) {
+    // Combine stock and option positions in HKD
+    //
+    // 0700.HK stock BID qty=100: delta=4,480, vega=0
+    // 0700_C350 BID qty=10: delta=24,640, vega=13,440
+    //
+    // Combined:
+    //   gross_delta = 4,480 + 24,640 = 29,120
+    //   gross_vega = 0 + 13,440 = 13,440
+
+    // Stock order
+    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0));
+
+    EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 4480.0);
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 0.0);
+
+    // Option order
+    engine.on_new_order_single(create_order("ORD002", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
+    engine.on_execution_report(create_ack("ORD002", 10));
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 25.0));
+
+    EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 29120.0) << "Stock + option delta";
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 13440.0) << "Only option contributes vega";
+    EXPECT_DOUBLE_EQ(net_delta("0700.HK"), 29120.0) << "Both BID = positive net";
+    EXPECT_DOUBLE_EQ(net_vega("0700.HK"), 13440.0) << "BID = positive net vega";
+}
+
+// ============================================================================
+// Test: HKD put option with negative delta
+// ============================================================================
+
+TEST_F(VegaDeltaCombinedTest, HKDPutOptionNegativeDelta) {
+    // 0700_P350 (Tencent put): delta=-0.45, vega=0.28, contract_size=100,
+    //                          underlyer_spot=HKD 350, fx_rate=0.128 (HKD->USD)
+    //
+    // For BID qty=10:
+    //   delta_exposure = 10 * (-0.45) * 100 * 350 * 0.128 = -20,160 USD
+    //   gross_delta = |-20,160| = 20,160
+    //   net_delta (BID) = -20,160 (negative because delta is negative)
+    //   vega_exposure = 10 * 0.28 * 100 * 350 * 0.128 = 12,544 USD
+
+    constexpr double HKD_TO_USD = 0.128;
+
+    engine.on_new_order_single(create_order("ORD001", "0700_P350", "0700.HK", Side::BID, 20.0, 10));
+    engine.on_execution_report(create_ack("ORD001", 10));
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 20.0));
+
+    // Verify delta exposure (negative delta put)
+    double expected_delta = 10 * (-0.45) * 100 * 350.0 * HKD_TO_USD;
+    EXPECT_DOUBLE_EQ(expected_delta, -20160.0) << "Put has negative delta";
+
+    EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 20160.0) << "Gross delta = |delta_exposure|";
+    EXPECT_DOUBLE_EQ(net_delta("0700.HK"), -20160.0) << "Net delta is negative (put BID)";
+
+    // Verify vega exposure (positive vega)
+    double expected_vega = 10 * 0.28 * 100 * 350.0 * HKD_TO_USD;
+    EXPECT_DOUBLE_EQ(expected_vega, 12544.0) << "Put has positive vega";
+
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 12544.0) << "Gross vega = vega_exposure";
+    EXPECT_DOUBLE_EQ(net_vega("0700.HK"), 12544.0) << "Net vega positive (BID)";
+}
+
+// ============================================================================
+// Test: Pre-trade check for HKD option respects fx_rate in limit comparison
+// ============================================================================
+
+TEST_F(VegaDeltaCombinedTest, HKDPreTradeCheckWithFxRate) {
+    // Set limits in USD (risk limits are always in base currency)
+    engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"0700.HK"}, 15000.0);  // 15,000 USD
+
+    // 0700_C350 BID qty=10: vega_exposure = 13,440 USD (under limit)
+    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
+    engine.on_execution_report(create_ack("ORD001", 10));
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0));
+
+    EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 13440.0);
+
+    // Pre-trade check: 0700_C350 BID qty=2 would add 2,688 vega
+    // Total would be 13,440 + 2,688 = 16,128 > 15,000 limit
+    auto order = create_order("ORD002", "0700_C350", "0700.HK", Side::BID, 25.0, 2);
+    auto result = engine.pre_trade_check(order);
+
+    EXPECT_TRUE(result.would_breach) << "Should breach gross vega limit";
+    EXPECT_TRUE(result.has_breach(LimitType::GROSS_VEGA));
+
+    const auto* breach = result.get_breach(LimitType::GROSS_VEGA);
+    ASSERT_NE(breach, nullptr);
+    EXPECT_DOUBLE_EQ(breach->current_usage, 13440.0);
+    // Additional vega = 2 * 0.30 * 100 * 350 * 0.128 = 2,688
+    EXPECT_DOUBLE_EQ(breach->hypothetical_usage, 16128.0);
+    EXPECT_DOUBLE_EQ(breach->limit_value, 15000.0);
 }
