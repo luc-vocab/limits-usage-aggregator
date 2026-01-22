@@ -16,6 +16,8 @@ enum class LimitType {
     QUOTED_INSTRUMENTS,    // Per-underlyer unique instruments
     GROSS_DELTA,           // Per-underlyer gross delta
     NET_DELTA,             // Per-underlyer net delta
+    GROSS_VEGA,            // Per-underlyer gross vega
+    NET_VEGA,              // Per-underlyer net vega
     STRATEGY_NOTIONAL,     // Per-strategy notional
     PORTFOLIO_NOTIONAL,    // Per-portfolio notional
     GLOBAL_NOTIONAL,       // Global notional
@@ -29,6 +31,8 @@ inline const char* to_string(LimitType type) {
         case LimitType::QUOTED_INSTRUMENTS: return "QUOTED_INSTRUMENTS";
         case LimitType::GROSS_DELTA: return "GROSS_DELTA";
         case LimitType::NET_DELTA: return "NET_DELTA";
+        case LimitType::GROSS_VEGA: return "GROSS_VEGA";
+        case LimitType::NET_VEGA: return "NET_VEGA";
         case LimitType::STRATEGY_NOTIONAL: return "STRATEGY_NOTIONAL";
         case LimitType::PORTFOLIO_NOTIONAL: return "PORTFOLIO_NOTIONAL";
         case LimitType::GLOBAL_NOTIONAL: return "GLOBAL_NOTIONAL";

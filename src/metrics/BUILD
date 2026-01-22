@@ -8,6 +8,7 @@ cc_library(
         "delta_metric.hpp",
         "notional_metric.hpp",
         "order_count_metric.hpp",
+        "vega_metric.hpp",
     ],
     deps = [
         "//src/aggregation",

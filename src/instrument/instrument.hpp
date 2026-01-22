@@ -98,6 +98,17 @@ struct has_delta<T, std::void_t<
 template<typename T>
 inline constexpr bool has_delta_v = has_delta<T>::value;
 
+template<typename T, typename = void>
+struct has_vega : std::false_type {};
+
+template<typename T>
+struct has_vega<T, std::void_t<
+    decltype(std::declval<const T&>().get_vega(std::declval<const std::string&>()))
+>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool has_vega_v = has_vega<T>::value;
+
 // ============================================================================
 // Combined provider traits
 // ============================================================================
@@ -139,6 +150,16 @@ using is_instrument_provider = is_option_provider<T>;
 template<typename T>
 inline constexpr bool is_instrument_provider_v = is_option_provider_v<T>;
 
+// Vega provider: option provider + vega support
+template<typename T>
+struct is_vega_provider : std::conjunction<
+    is_option_provider<T>,
+    has_vega<T>
+> {};
+
+template<typename T>
+inline constexpr bool is_vega_provider_v = is_vega_provider<T>::value;
+
 // ============================================================================
 // Free function templates for computing values from any provider
 // ============================================================================
@@ -168,6 +189,19 @@ double compute_delta_exposure(const Provider& provider, const std::string& symbo
          * provider.get_fx_rate(symbol);
 }
 
+// Compute vega exposure: quantity * vega * contract_size * underlyer_spot * fx_rate
+// Requires: is_vega_provider_v<Provider> (vega-aware provider)
+template<typename Provider>
+double compute_vega_exposure(const Provider& provider, const std::string& symbol, int64_t quantity) {
+    static_assert(is_vega_provider_v<Provider>,
+                  "Provider must satisfy vega provider requirements (vega support)");
+    return static_cast<double>(quantity)
+         * provider.get_vega(symbol)
+         * provider.get_contract_size(symbol)
+         * provider.get_underlyer_spot(symbol)
+         * provider.get_fx_rate(symbol);
+}
+
 // ============================================================================
 // InstrumentData - Data structure for instrument properties
 // ============================================================================
@@ -179,6 +213,7 @@ struct InstrumentData {
     std::string underlyer;
     double underlyer_spot = 0.0;    // Same as spot for equities
     double delta = 1.0;             // 1.0 for equities/futures
+    double vega = 0.0;              // 0.0 for equities/futures
 };
 
 // ============================================================================
@@ -284,6 +319,7 @@ public:
                    double spot_price,
                    double underlyer_spot,
                    double delta,
+                   double vega = 0.0,
                    double contract_size = 100.0,
                    double fx_rate = 1.0) {
         InstrumentData data;
@@ -293,6 +329,7 @@ public:
         data.underlyer = underlyer;
         data.underlyer_spot = underlyer_spot;
         data.delta = delta;
+        data.vega = vega;
         instruments_[symbol] = data;
     }
 
@@ -409,6 +446,14 @@ public:
         return default_data_.delta;
     }
 
+    double get_vega(const std::string& symbol) const {
+        auto it = instruments_.find(symbol);
+        if (it != instruments_.end()) {
+            return it->second.vega;
+        }
+        return default_data_.vega;
+    }
+
     // Convenience methods that use the free function templates
     double compute_notional(const std::string& symbol, int64_t quantity) const {
         return instrument::compute_notional(*this, symbol, quantity);
@@ -417,10 +462,16 @@ public:
     double compute_delta_exposure(const std::string& symbol, int64_t quantity) const {
         return instrument::compute_delta_exposure(*this, symbol, quantity);
     }
+
+    double compute_vega_exposure(const std::string& symbol, int64_t quantity) const {
+        return instrument::compute_vega_exposure(*this, symbol, quantity);
+    }
 };
 
 // Static assertion to verify StaticInstrumentProvider satisfies the concept
 static_assert(is_instrument_provider_v<StaticInstrumentProvider>,
               "StaticInstrumentProvider must satisfy InstrumentProvider requirements");
+static_assert(is_vega_provider_v<StaticInstrumentProvider>,
+              "StaticInstrumentProvider must satisfy VegaProvider requirements");
 
 } // namespace instrument
