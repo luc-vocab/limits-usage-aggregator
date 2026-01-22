@@ -7,7 +7,6 @@ namespace metrics {
     template<typename... Stages> class OrderCountMetrics;
     template<typename Key, typename... Stages> class OrderCountMetric;
     template<typename... Stages> class QuotedInstrumentCountMetric;
-    template<typename Key, typename Context, typename Instrument, typename... Stages> class NotionalMetric;
 }
 
 namespace engine {
@@ -56,24 +55,6 @@ struct has_order_count_metric : std::disjunction<is_order_count_metric<Types>...
 template<typename... Types>
 inline constexpr bool has_order_count_metric_v = has_order_count_metric<Types...>::value;
 
-// NotionalMetric detection
-template<typename T, typename Context = void, typename Instrument = void>
-struct is_notional_metric : std::false_type {};
-
-// Detect individual NotionalMetric<Key, Context, Instrument, Stages...>
-template<typename Key, typename ContextT, typename InstrumentT, typename... Stages>
-struct is_notional_metric<metrics::NotionalMetric<Key, ContextT, InstrumentT, Stages...>, void, void> : std::true_type {};
-
-template<typename T, typename Context = void, typename Instrument = void>
-inline constexpr bool is_notional_metric_v = is_notional_metric<T, Context, Instrument>::value;
-
-// Check if any type in a list is a NotionalMetric
-template<typename... Types>
-struct has_notional_metric : std::disjunction<is_notional_metric<Types, void, void>...> {};
-
-template<typename... Types>
-inline constexpr bool has_notional_metric_v = has_notional_metric<Types...>::value;
-
 // ============================================================================
 // Metric type finder
 // ============================================================================
@@ -104,10 +85,6 @@ struct find_matching_type<Pred, T, Rest...> {
 // Find the OrderCountMetrics type in a parameter pack
 template<typename... Types>
 using order_count_metric_t = typename find_matching_type<is_order_count_metric, Types...>::type;
-
-// Find the NotionalMetric type in a parameter pack
-template<typename... Types>
-using notional_metric_t = typename find_matching_type<is_notional_metric, Types...>::type;
 
 // Forward declaration of the generic engine
 template<typename ContextType, typename Instrument, typename... Metrics>

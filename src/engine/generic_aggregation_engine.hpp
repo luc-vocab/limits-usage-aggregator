@@ -68,8 +68,8 @@ inline constexpr bool has_set_instrument_position_with_instrument_and_context_v 
 //   using Context = MyContext;
 //   using Instrument = instrument::InstrumentData;
 //   using MyEngine = GenericRiskAggregationEngine<Context, Instrument,
-//       metrics::DeltaMetric<aggregation::UnderlyerKey, Context, Instrument>,
-//       metrics::NotionalMetric<aggregation::GlobalKey, Context, Instrument>>;
+//       metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Context, Instrument>,
+//       metrics::GrossNotionalMetric<aggregation::GlobalKey, Context, Instrument>>;
 //
 //   Context ctx;
 //   MyEngine engine(ctx);

@@ -137,12 +137,12 @@ SimpleInstrumentProvider create_stock_provider() {
 // For equities, notional = quantity * spot_price (contract_size=1, fx_rate=1).
 //
 // Metrics used:
-//   - GlobalNotional: NotionalMetric<GlobalKey, InstrumentData, OpenStage, InFlightStage>
+//   - GlobalNotional: GrossNotionalMetric<GlobalKey, Context, InstrumentData, OpenStage, InFlightStage>
 //
 
 class GrossOpenNotionalTest : public ::testing::Test {
 protected:
-    using GlobalNotional = GlobalNotionalMetric<TestContext, InstrumentData, OpenStage, InFlightStage>;
+    using GlobalNotional = GlobalGrossNotionalMetric<TestContext, InstrumentData, OpenStage, InFlightStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
         TestContext,
@@ -271,10 +271,10 @@ TEST_F(GrossOpenNotionalTest, LimitEnforcement) {
     auto goog_inst = get_instrument(goog_order.symbol);
     auto result2 = engine->pre_trade_check(goog_order, goog_inst);
     EXPECT_TRUE(result2.would_breach) << "Should breach: 75000 + 30000 = 105000 > 100000";
-    EXPECT_TRUE(result2.has_breach(LimitType::GLOBAL_NOTIONAL));
+    EXPECT_TRUE(result2.has_breach(LimitType::GLOBAL_GROSS_NOTIONAL));
 
     // Verify breach details
-    const auto* breach = result2.get_breach(LimitType::GLOBAL_NOTIONAL);
+    const auto* breach = result2.get_breach(LimitType::GLOBAL_GROSS_NOTIONAL);
     ASSERT_NE(breach, nullptr);
     EXPECT_DOUBLE_EQ(breach->current_usage, 75000.0);
     EXPECT_DOUBLE_EQ(breach->hypothetical_usage, 105000.0);
@@ -384,6 +384,6 @@ TEST_F(GrossOpenNotionalTest, PreTradeCheckResultToString) {
 
     // Verify to_string() contains expected information
     std::string result_str = result.to_string();
-    EXPECT_NE(result_str.find("GLOBAL_NOTIONAL"), std::string::npos);
+    EXPECT_NE(result_str.find("GLOBAL_GROSS_NOTIONAL"), std::string::npos);
     EXPECT_NE(result_str.find("FAILED"), std::string::npos);
 }

@@ -153,7 +153,7 @@ SimpleInstrumentProvider create_stock_provider() {
 
 class PreTradeCheckUpdateNotionalTest : public ::testing::Test {
 protected:
-    using GlobalNotional = GlobalNotionalMetric<SimpleTestContext, InstrumentData, OpenStage, InFlightStage>;
+    using GlobalNotional = GlobalGrossNotionalMetric<SimpleTestContext, InstrumentData, OpenStage, InFlightStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
         SimpleTestContext,
@@ -201,9 +201,9 @@ TEST_F(PreTradeCheckUpdateNotionalTest, UpdateIncreaseQuantityBreachesLimit) {
 
     auto result = engine->pre_trade_check(replace, inst);
     EXPECT_TRUE(result.would_breach) << "Update should breach limit";
-    EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_NOTIONAL));
+    EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_GROSS_NOTIONAL));
 
-    const auto* breach = result.get_breach(LimitType::GLOBAL_NOTIONAL);
+    const auto* breach = result.get_breach(LimitType::GLOBAL_GROSS_NOTIONAL);
     ASSERT_NE(breach, nullptr);
     EXPECT_DOUBLE_EQ(breach->current_usage, 15000.0);
     EXPECT_DOUBLE_EQ(breach->hypothetical_usage, 60000.0);
@@ -356,7 +356,7 @@ class PreTradeCheckSingleMetricTest : public ::testing::Test {
 protected:
     using GrossDelta = GrossDeltaMetric<UnderlyerKey, StaticTestContext, InstrumentData, AllStages>;
     using NetDelta = NetDeltaMetric<UnderlyerKey, StaticTestContext, InstrumentData, AllStages>;
-    using GlobalNotional = GlobalNotionalMetric<StaticTestContext, InstrumentData, AllStages>;
+    using GlobalNotional = GlobalGrossNotionalMetric<StaticTestContext, InstrumentData, AllStages>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
         StaticTestContext,
@@ -552,7 +552,7 @@ TEST_F(ComputeUpdateContributionTest, NetDeltaContribution) {
 }
 
 TEST_F(ComputeUpdateContributionTest, NotionalContribution) {
-    using Notional = GlobalNotionalMetric<StaticTestContext, InstrumentData, AllStages>;
+    using Notional = GlobalGrossNotionalMetric<StaticTestContext, InstrumentData, AllStages>;
 
     TrackedOrder existing;
     existing.symbol = "AAPL_OPT1";
@@ -598,7 +598,7 @@ TEST_F(ComputeUpdateContributionTest, OrderCountContributionIsZero) {
 
 class PreTradeCheckUpdateFullFlowTest : public ::testing::Test {
 protected:
-    using GlobalNotional = GlobalNotionalMetric<SimpleTestContext, InstrumentData, OpenStage, InFlightStage>;
+    using GlobalNotional = GlobalGrossNotionalMetric<SimpleTestContext, InstrumentData, OpenStage, InFlightStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
         SimpleTestContext,

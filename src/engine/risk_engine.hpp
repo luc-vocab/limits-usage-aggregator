@@ -27,21 +27,21 @@ template<typename... Stages>
 using QuotedInstrumentCount = metrics::QuotedInstrumentCountMetric<Stages...>;
 
 // Notional metrics - track notional exposure per key
-template<typename Provider, typename... Stages>
-using GlobalNotional = metrics::GlobalNotionalMetric<Provider, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalGrossNotional = metrics::GlobalGrossNotionalMetric<Context, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using StrategyNotional = metrics::NotionalMetric<aggregation::StrategyKey, Provider, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using StrategyGrossNotional = metrics::StrategyGrossNotionalMetric<Context, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using PortfolioNotional = metrics::NotionalMetric<aggregation::PortfolioKey, Provider, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using PortfolioGrossNotional = metrics::PortfolioGrossNotionalMetric<Context, Instrument, Stages...>;
 
 // Delta metrics - track delta exposure per key
-template<typename Provider, typename... Stages>
-using GlobalDelta = metrics::GlobalDeltaMetric<Provider, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using GlobalGrossDelta = metrics::GlobalGrossDeltaMetric<Context, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using UnderlyerDelta = metrics::UnderlyerDeltaMetric<Provider, Stages...>;
+template<typename Context, typename Instrument, typename... Stages>
+using UnderlyerGrossDelta = metrics::UnderlyerGrossDeltaMetric<Context, Instrument, Stages...>;
 
 // ============================================================================
 // Example engine configurations using single-purpose metrics
@@ -62,45 +62,45 @@ using OrderAndQuotedEngine = GenericRiskAggregationEngine<
     metrics::QuotedInstrumentCountMetric<Stages...>
 >;
 
-// Engine with global notional only
-template<typename Provider, typename... Stages>
+// Engine with global gross notional only
+template<typename Context, typename Instrument, typename... Stages>
 using GlobalNotionalEngine = GenericRiskAggregationEngine<
-    Provider,
-    metrics::GlobalNotionalMetric<Provider, Stages...>
+    Context,
+    metrics::GlobalGrossNotionalMetric<Context, Instrument, Stages...>
 >;
 
-// Engine with global delta only
-template<typename Provider, typename... Stages>
+// Engine with global gross delta only
+template<typename Context, typename Instrument, typename... Stages>
 using GlobalDeltaEngine = GenericRiskAggregationEngine<
-    Provider,
-    metrics::GlobalDeltaMetric<Provider, Stages...>
+    Context,
+    metrics::GlobalGrossDeltaMetric<Context, Instrument, Stages...>
 >;
 
-// Engine with per-underlyer delta
-template<typename Provider, typename... Stages>
+// Engine with per-underlyer gross delta
+template<typename Context, typename Instrument, typename... Stages>
 using UnderlyerDeltaEngine = GenericRiskAggregationEngine<
-    Provider,
-    metrics::UnderlyerDeltaMetric<Provider, Stages...>
+    Context,
+    metrics::UnderlyerGrossDeltaMetric<Context, Instrument, Stages...>
 >;
 
-// Full engine with global and underlyer delta
-template<typename Provider, typename... Stages>
+// Full engine with global and underlyer gross delta
+template<typename Context, typename Instrument, typename... Stages>
 using FullDeltaEngine = GenericRiskAggregationEngine<
-    Provider,
-    metrics::GlobalDeltaMetric<Provider, Stages...>,
-    metrics::UnderlyerDeltaMetric<Provider, Stages...>
+    Context,
+    metrics::GlobalGrossDeltaMetric<Context, Instrument, Stages...>,
+    metrics::UnderlyerGrossDeltaMetric<Context, Instrument, Stages...>
 >;
 
 // Comprehensive engine with multiple metrics
-template<typename Provider, typename... Stages>
+template<typename Context, typename Instrument, typename... Stages>
 using ComprehensiveEngine = GenericRiskAggregationEngine<
-    Provider,
+    Context,
     metrics::OrderCountMetric<aggregation::InstrumentSideKey, Stages...>,
     metrics::QuotedInstrumentCountMetric<Stages...>,
-    metrics::GlobalNotionalMetric<Provider, Stages...>,
-    metrics::NotionalMetric<aggregation::StrategyKey, Provider, Stages...>,
-    metrics::GlobalDeltaMetric<Provider, Stages...>,
-    metrics::UnderlyerDeltaMetric<Provider, Stages...>
+    metrics::GlobalGrossNotionalMetric<Context, Instrument, Stages...>,
+    metrics::StrategyGrossNotionalMetric<Context, Instrument, Stages...>,
+    metrics::GlobalGrossDeltaMetric<Context, Instrument, Stages...>,
+    metrics::UnderlyerGrossDeltaMetric<Context, Instrument, Stages...>
 >;
 
 } // namespace engine
