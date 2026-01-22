@@ -9,6 +9,7 @@
 
 using namespace engine;
 using namespace fix;
+using namespace aggregation;
 
 // ============================================================================
 // Order Step Definitions for Parameterized Tests
@@ -139,9 +140,9 @@ private:
     using Provider = instrument::StaticInstrumentProvider;
     RiskAggregationEngineWithLimits<
         Provider,
-        metrics::DeltaMetrics<Provider>,
-        metrics::OrderCountMetrics,
-        metrics::NotionalMetrics<Provider>
+        metrics::DeltaMetrics<Provider, aggregation::AllStages>,
+        metrics::OrderCountMetrics<aggregation::AllStages>,
+        metrics::NotionalMetrics<Provider, aggregation::AllStages>
     > risk_engine_;
 
     // Track pending orders by ID for message construction

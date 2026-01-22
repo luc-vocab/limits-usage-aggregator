@@ -1,5 +1,7 @@
 #pragma once
 
+#include <type_traits>
+
 namespace engine {
     enum class OrderState;  // Forward declaration
 }
@@ -28,6 +30,70 @@ enum class OrderStage {
     OPEN,        // Acknowledged, live orders
     IN_FLIGHT    // PENDING_NEW, PENDING_REPLACE, PENDING_CANCEL
 };
+
+// ============================================================================
+// Stage type tags for compile-time metric configuration
+// ============================================================================
+//
+// These type tags allow metrics to explicitly declare which stages they track
+// via template parameters. This provides compile-time type safety and allows
+// metrics to be configured for specific stage tracking requirements.
+//
+// Usage:
+//   DeltaMetrics<Provider, AllStages>  // Track all stages (default)
+//   DeltaMetrics<Provider, OpenStage, InFlightStage>  // Track only open and in-flight
+//
+
+struct PositionStage {
+    static constexpr OrderStage value = OrderStage::POSITION;
+    static constexpr const char* name = "position";
+};
+
+struct OpenStage {
+    static constexpr OrderStage value = OrderStage::OPEN;
+    static constexpr const char* name = "open";
+};
+
+struct InFlightStage {
+    static constexpr OrderStage value = OrderStage::IN_FLIGHT;
+    static constexpr const char* name = "in_flight";
+};
+
+// Meta-tag representing all stages (Position + Open + InFlight)
+struct AllStages {
+    static constexpr const char* name = "all";
+};
+
+// ============================================================================
+// Stage configuration helper
+// ============================================================================
+//
+// StageConfig determines which stages a metric tracks based on template params.
+// If AllStages is provided OR no stages are specified, all stages are tracked.
+// Otherwise, only the explicitly listed stages are tracked.
+//
+
+template<typename... Stages>
+struct StageConfig {
+private:
+    template<typename Target, typename... List>
+    static constexpr bool contains() {
+        return (std::is_same_v<Target, List> || ...);
+    }
+
+    // If AllStages is provided OR no stages specified, track all stages
+    static constexpr bool has_all_stages = (sizeof...(Stages) == 0) || contains<AllStages, Stages...>();
+
+public:
+    static constexpr bool track_position = has_all_stages || contains<PositionStage, Stages...>();
+    static constexpr bool track_open = has_all_stages || contains<OpenStage, Stages...>();
+    static constexpr bool track_in_flight = has_all_stages || contains<InFlightStage, Stages...>();
+    static constexpr size_t stage_count =
+        (track_position ? 1 : 0) + (track_open ? 1 : 0) + (track_in_flight ? 1 : 0);
+};
+
+// Convenience alias for tracking all stages
+using DefaultStageConfig = StageConfig<AllStages>;
 
 inline const char* to_string(OrderStage stage) {
     switch (stage) {

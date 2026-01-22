@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../aggregation/multi_group_aggregator.hpp"
+#include "../aggregation/order_stage.hpp"
 #include "../fix/fix_types.hpp"
 #include "../instrument/instrument.hpp"
 #include <cmath>
@@ -15,46 +16,156 @@ namespace engine {
 namespace metrics {
 
 // ============================================================================
+// NotionalData - Internal storage for notional tracking at a single stage
+// ============================================================================
+
+template<typename Provider>
+struct NotionalData {
+    // Track quantities per instrument
+    std::unordered_map<std::string, int64_t> instrument_quantities;
+
+    // Track notional per strategy/portfolio (precomputed)
+    std::unordered_map<std::string, double> strategy_notional;
+    std::unordered_map<std::string, double> portfolio_notional;
+
+    // Global totals
+    int64_t global_qty = 0;
+    double global_notional_value = 0.0;
+
+    void clear() {
+        instrument_quantities.clear();
+        strategy_notional.clear();
+        portfolio_notional.clear();
+        global_qty = 0;
+        global_notional_value = 0.0;
+    }
+
+    void add(const Provider* provider, const std::string& symbol,
+             const std::string& strategy_id, const std::string& portfolio_id,
+             int64_t quantity) {
+        instrument_quantities[symbol] += quantity;
+        global_qty += quantity;
+
+        double notional = provider ?
+            instrument::compute_notional(*provider, symbol, quantity) : 0.0;
+        global_notional_value += notional;
+
+        if (!strategy_id.empty()) {
+            strategy_notional[strategy_id] += notional;
+        }
+        if (!portfolio_id.empty()) {
+            portfolio_notional[portfolio_id] += notional;
+        }
+    }
+
+    void remove(const Provider* provider, const std::string& symbol,
+                const std::string& strategy_id, const std::string& portfolio_id,
+                int64_t quantity) {
+        auto it = instrument_quantities.find(symbol);
+        if (it != instrument_quantities.end()) {
+            it->second -= quantity;
+            global_qty -= quantity;
+
+            double notional = provider ?
+                instrument::compute_notional(*provider, symbol, quantity) : 0.0;
+            global_notional_value -= notional;
+
+            if (!strategy_id.empty()) {
+                strategy_notional[strategy_id] -= notional;
+            }
+            if (!portfolio_id.empty()) {
+                portfolio_notional[portfolio_id] -= notional;
+            }
+
+            if (it->second <= 0) {
+                instrument_quantities.erase(it);
+                cleanup_mappings(strategy_id, portfolio_id);
+            }
+        }
+    }
+
+    double get_global_notional() const {
+        return global_notional_value;
+    }
+
+    double get_strategy_notional(const std::string& strategy_id) const {
+        auto it = strategy_notional.find(strategy_id);
+        return it != strategy_notional.end() ? it->second : 0.0;
+    }
+
+    double get_portfolio_notional(const std::string& portfolio_id) const {
+        auto it = portfolio_notional.find(portfolio_id);
+        return it != portfolio_notional.end() ? it->second : 0.0;
+    }
+
+private:
+    void cleanup_mappings(const std::string& strategy_id, const std::string& portfolio_id) {
+        if (!strategy_id.empty()) {
+            auto it = strategy_notional.find(strategy_id);
+            if (it != strategy_notional.end() && std::abs(it->second) < 1e-9) {
+                strategy_notional.erase(it);
+            }
+        }
+        if (!portfolio_id.empty()) {
+            auto it = portfolio_notional.find(portfolio_id);
+            if (it != portfolio_notional.end() && std::abs(it->second) < 1e-9) {
+                portfolio_notional.erase(it);
+            }
+        }
+    }
+};
+
+// ============================================================================
 // Notional Metrics - Tracks open order notional by strategy/portfolio
 // ============================================================================
 //
-// Uses quantity-based tracking with lazy notional computation via InstrumentProvider.
+// Uses quantity-based tracking with precomputed notional via InstrumentProvider.
 // Notional is computed as: quantity * contract_size * spot_price * fx_rate
 //
-// Template parameter Provider must satisfy the InstrumentProvider concept.
+// Template parameters:
+//   Provider: Must satisfy the InstrumentProvider concept
+//   Stages...: Stage types to track (PositionStage, OpenStage, InFlightStage, or AllStages)
+//              Default is AllStages which tracks all three stages.
 //
 // Tracks quantities at:
 // - Global level (system-wide totals)
 // - Per-strategy level (if strategy_id is non-empty)
 // - Per-portfolio level (if portfolio_id is non-empty)
+// - Per-stage level (position, open, in-flight)
 //
 
-template<typename Provider>
+template<typename Provider, typename... Stages>
 class NotionalMetrics {
     static_assert(instrument::is_notional_provider_v<Provider>,
                   "Provider must satisfy notional provider requirements (spot, fx, contract_size)");
 
+    using Config = aggregation::StageConfig<Stages...>;
+
 private:
     const Provider* provider_ = nullptr;
 
-    // Track quantities per instrument
-    // Key: symbol, Value: quantity
-    std::unordered_map<std::string, int64_t> instrument_quantities_;
+    // Per-stage data storage
+    NotionalData<Provider> position_data_;
+    NotionalData<Provider> open_data_;
+    NotionalData<Provider> in_flight_data_;
 
-    // Track notional per strategy/portfolio
-    std::unordered_map<std::string, double> strategy_notional_;
-    std::unordered_map<std::string, double> portfolio_notional_;
-
-    // Global totals
-    int64_t global_qty_ = 0;
-    double global_notional_ = 0.0;
-
-    // Compute notional for a single instrument
-    double compute_instrument_notional(const std::string& symbol, int64_t quantity) const {
-        if (!provider_) {
-            return 0.0;
+    // Get data reference for a given stage
+    NotionalData<Provider>& get_stage_data(aggregation::OrderStage stage) {
+        switch (stage) {
+            case aggregation::OrderStage::POSITION: return position_data_;
+            case aggregation::OrderStage::OPEN: return open_data_;
+            case aggregation::OrderStage::IN_FLIGHT: return in_flight_data_;
+            default: return position_data_;
         }
-        return instrument::compute_notional(*provider_, symbol, quantity);
+    }
+
+    const NotionalData<Provider>& get_stage_data(aggregation::OrderStage stage) const {
+        switch (stage) {
+            case aggregation::OrderStage::POSITION: return position_data_;
+            case aggregation::OrderStage::OPEN: return open_data_;
+            case aggregation::OrderStage::IN_FLIGHT: return in_flight_data_;
+            default: return position_data_;
+        }
     }
 
 public:
@@ -69,10 +180,163 @@ public:
     }
 
     // ========================================================================
+    // Stage configuration info
+    // ========================================================================
+
+    static constexpr bool tracks_position() { return Config::track_position; }
+    static constexpr bool tracks_open() { return Config::track_open; }
+    static constexpr bool tracks_in_flight() { return Config::track_in_flight; }
+
+    // ========================================================================
+    // Per-stage accessors
+    // ========================================================================
+
+    // Position stage accessors
+    const NotionalData<Provider>& position() const { return position_data_; }
+    double position_notional() const { return position_data_.get_global_notional(); }
+    double position_strategy_notional(const std::string& strategy_id) const {
+        return position_data_.get_strategy_notional(strategy_id);
+    }
+    double position_portfolio_notional(const std::string& portfolio_id) const {
+        return position_data_.get_portfolio_notional(portfolio_id);
+    }
+    int64_t position_quantity() const { return position_data_.global_qty; }
+
+    // Open stage accessors
+    const NotionalData<Provider>& open_orders() const { return open_data_; }
+    double open_notional() const { return open_data_.get_global_notional(); }
+    double open_strategy_notional(const std::string& strategy_id) const {
+        return open_data_.get_strategy_notional(strategy_id);
+    }
+    double open_portfolio_notional(const std::string& portfolio_id) const {
+        return open_data_.get_portfolio_notional(portfolio_id);
+    }
+    int64_t open_quantity() const { return open_data_.global_qty; }
+
+    // In-flight stage accessors
+    const NotionalData<Provider>& in_flight() const { return in_flight_data_; }
+    double in_flight_notional() const { return in_flight_data_.get_global_notional(); }
+    double in_flight_strategy_notional(const std::string& strategy_id) const {
+        return in_flight_data_.get_strategy_notional(strategy_id);
+    }
+    double in_flight_portfolio_notional(const std::string& portfolio_id) const {
+        return in_flight_data_.get_portfolio_notional(portfolio_id);
+    }
+    int64_t in_flight_quantity() const { return in_flight_data_.global_qty; }
+
+    // ========================================================================
+    // Order exposure accessors (open + in-flight only, excludes position)
+    // ========================================================================
+    //
+    // For pre-trade risk checking, "order exposure" excludes realized positions.
+    // These accessors return the notional from pending orders only.
+    //
+
+    double global_notional() const {
+        double total = 0.0;
+        if constexpr (Config::track_open) total += open_notional();
+        if constexpr (Config::track_in_flight) total += in_flight_notional();
+        return total;
+    }
+
+    double strategy_notional(const std::string& strategy_id) const {
+        double total = 0.0;
+        if constexpr (Config::track_open) total += open_strategy_notional(strategy_id);
+        if constexpr (Config::track_in_flight) total += in_flight_strategy_notional(strategy_id);
+        return total;
+    }
+
+    double portfolio_notional(const std::string& portfolio_id) const {
+        double total = 0.0;
+        if constexpr (Config::track_open) total += open_portfolio_notional(portfolio_id);
+        if constexpr (Config::track_in_flight) total += in_flight_portfolio_notional(portfolio_id);
+        return total;
+    }
+
+    int64_t global_quantity() const {
+        int64_t total = 0;
+        if constexpr (Config::track_open) total += open_quantity();
+        if constexpr (Config::track_in_flight) total += in_flight_quantity();
+        return total;
+    }
+
+    // ========================================================================
+    // Total accessors (including position stage)
+    // ========================================================================
+
+    double total_global_notional() const {
+        double total = 0.0;
+        if constexpr (Config::track_position) total += position_notional();
+        if constexpr (Config::track_open) total += open_notional();
+        if constexpr (Config::track_in_flight) total += in_flight_notional();
+        return total;
+    }
+
+    double total_strategy_notional(const std::string& strategy_id) const {
+        double total = 0.0;
+        if constexpr (Config::track_position) total += position_strategy_notional(strategy_id);
+        if constexpr (Config::track_open) total += open_strategy_notional(strategy_id);
+        if constexpr (Config::track_in_flight) total += in_flight_strategy_notional(strategy_id);
+        return total;
+    }
+
+    double total_portfolio_notional(const std::string& portfolio_id) const {
+        double total = 0.0;
+        if constexpr (Config::track_position) total += position_portfolio_notional(portfolio_id);
+        if constexpr (Config::track_open) total += open_portfolio_notional(portfolio_id);
+        if constexpr (Config::track_in_flight) total += in_flight_portfolio_notional(portfolio_id);
+        return total;
+    }
+
+    int64_t total_quantity() const {
+        int64_t total = 0;
+        if constexpr (Config::track_position) total += position_quantity();
+        if constexpr (Config::track_open) total += open_quantity();
+        if constexpr (Config::track_in_flight) total += in_flight_quantity();
+        return total;
+    }
+
+    std::vector<aggregation::StrategyKey> strategies() const {
+        std::set<std::string> all_strategies;
+        auto collect = [&all_strategies](const NotionalData<Provider>& data) {
+            for (const auto& [strategy_id, _] : data.strategy_notional) {
+                all_strategies.insert(strategy_id);
+            }
+        };
+        if constexpr (Config::track_position) collect(position_data_);
+        if constexpr (Config::track_open) collect(open_data_);
+        if constexpr (Config::track_in_flight) collect(in_flight_data_);
+
+        std::vector<aggregation::StrategyKey> result;
+        for (const auto& s : all_strategies) {
+            result.push_back(aggregation::StrategyKey{s});
+        }
+        return result;
+    }
+
+    std::vector<aggregation::PortfolioKey> portfolios() const {
+        std::set<std::string> all_portfolios;
+        auto collect = [&all_portfolios](const NotionalData<Provider>& data) {
+            for (const auto& [portfolio_id, _] : data.portfolio_notional) {
+                all_portfolios.insert(portfolio_id);
+            }
+        };
+        if constexpr (Config::track_position) collect(position_data_);
+        if constexpr (Config::track_open) collect(open_data_);
+        if constexpr (Config::track_in_flight) collect(in_flight_data_);
+
+        std::vector<aggregation::PortfolioKey> result;
+        for (const auto& p : all_portfolios) {
+            result.push_back(aggregation::PortfolioKey{p});
+        }
+        return result;
+    }
+
+    // ========================================================================
     // Generic metric interface (used by template RiskAggregationEngine)
     // ========================================================================
 
-    // Called when order is sent (PENDING_NEW state)
+    // Called when order is sent (PENDING_NEW state -> IN_FLIGHT stage)
     void on_order_added(const engine::TrackedOrder& order);
 
     // Called when order is fully removed (nack, cancel, full fill)
@@ -81,8 +345,23 @@ public:
     // Called when order is modified (update ack)
     void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty);
 
-    // Called on partial fill
+    // Called on partial fill - reduces open stage, credits position stage
     void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty);
+
+    // Called on full fill - credits position stage before order removal
+    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty);
+
+    // Called when order state changes (for stage transitions)
+    void on_state_change(const engine::TrackedOrder& order,
+                         engine::OrderState old_state,
+                         engine::OrderState new_state);
+
+    // Called when order is modified AND changes state (replace ack)
+    // Combines stage transition with quantity update
+    void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             int64_t old_qty,
+                                             engine::OrderState old_state,
+                                             engine::OrderState new_state);
 
     // ========================================================================
     // Direct interface (for backward compatibility and direct usage)
@@ -90,44 +369,14 @@ public:
 
     void add_order(const std::string& symbol, const std::string& strategy_id,
                    const std::string& portfolio_id, int64_t quantity) {
-        instrument_quantities_[symbol] += quantity;
-        global_qty_ += quantity;
-
-        // Compute notional for this quantity and update totals
-        double notional = compute_instrument_notional(symbol, quantity);
-        global_notional_ += notional;
-
-        if (!strategy_id.empty()) {
-            strategy_notional_[strategy_id] += notional;
-        }
-        if (!portfolio_id.empty()) {
-            portfolio_notional_[portfolio_id] += notional;
-        }
+        // Default: add to in_flight
+        in_flight_data_.add(provider_, symbol, strategy_id, portfolio_id, quantity);
     }
 
     void remove_order(const std::string& symbol, const std::string& strategy_id,
                       const std::string& portfolio_id, int64_t quantity) {
-        auto it = instrument_quantities_.find(symbol);
-        if (it != instrument_quantities_.end()) {
-            it->second -= quantity;
-            global_qty_ -= quantity;
-
-            // Compute notional for this quantity and update totals
-            double notional = compute_instrument_notional(symbol, quantity);
-            global_notional_ -= notional;
-
-            if (!strategy_id.empty()) {
-                strategy_notional_[strategy_id] -= notional;
-            }
-            if (!portfolio_id.empty()) {
-                portfolio_notional_[portfolio_id] -= notional;
-            }
-
-            if (it->second <= 0) {
-                instrument_quantities_.erase(it);
-                cleanup_mappings(symbol, strategy_id, portfolio_id);
-            }
-        }
+        // Default: remove from in_flight
+        in_flight_data_.remove(provider_, symbol, strategy_id, portfolio_id, quantity);
     }
 
     void update_order(const std::string& symbol, const std::string& strategy_id,
@@ -136,81 +385,25 @@ public:
         add_order(symbol, strategy_id, portfolio_id, new_qty);
     }
 
-    void partial_fill(const std::string& symbol, const std::string& strategy_id,
-                      const std::string& portfolio_id, int64_t filled_qty) {
-        remove_order(symbol, strategy_id, portfolio_id, filled_qty);
+    // Position management
+    void add_to_position(const std::string& symbol, const std::string& strategy_id,
+                         const std::string& portfolio_id, int64_t quantity) {
+        position_data_.add(provider_, symbol, strategy_id, portfolio_id, quantity);
     }
 
-    // ========================================================================
-    // Accessors - O(1) lookups of precomputed notional values
-    // ========================================================================
-
-    // Quantity accessors
-    int64_t global_quantity() const { return global_qty_; }
-
-    int64_t instrument_quantity(const std::string& symbol) const {
-        auto it = instrument_quantities_.find(symbol);
-        return it != instrument_quantities_.end() ? it->second : 0;
+    void remove_from_position(const std::string& symbol, const std::string& strategy_id,
+                              const std::string& portfolio_id, int64_t quantity) {
+        position_data_.remove(provider_, symbol, strategy_id, portfolio_id, quantity);
     }
 
-    // Notional accessors (O(1) lookups)
-    double global_notional() const {
-        return global_notional_;
-    }
-
-    double strategy_notional(const std::string& strategy_id) const {
-        auto it = strategy_notional_.find(strategy_id);
-        return it != strategy_notional_.end() ? it->second : 0.0;
-    }
-
-    double portfolio_notional(const std::string& portfolio_id) const {
-        auto it = portfolio_notional_.find(portfolio_id);
-        return it != portfolio_notional_.end() ? it->second : 0.0;
-    }
-
-    std::vector<aggregation::StrategyKey> strategies() const {
-        std::vector<aggregation::StrategyKey> result;
-        for (const auto& [strategy_id, _] : strategy_notional_) {
-            result.push_back(aggregation::StrategyKey{strategy_id});
-        }
-        return result;
-    }
-
-    std::vector<aggregation::PortfolioKey> portfolios() const {
-        std::vector<aggregation::PortfolioKey> result;
-        for (const auto& [portfolio_id, _] : portfolio_notional_) {
-            result.push_back(aggregation::PortfolioKey{portfolio_id});
-        }
-        return result;
+    void clear_positions() {
+        position_data_.clear();
     }
 
     void clear() {
-        instrument_quantities_.clear();
-        strategy_notional_.clear();
-        portfolio_notional_.clear();
-        global_qty_ = 0;
-        global_notional_ = 0.0;
-    }
-
-private:
-    void cleanup_mappings([[maybe_unused]] const std::string& symbol,
-                          const std::string& strategy_id,
-                          const std::string& portfolio_id) {
-        // Clean up strategy entry if notional is zero (within floating point tolerance)
-        if (!strategy_id.empty()) {
-            auto it = strategy_notional_.find(strategy_id);
-            if (it != strategy_notional_.end() && std::abs(it->second) < 1e-9) {
-                strategy_notional_.erase(it);
-            }
-        }
-
-        // Clean up portfolio entry if notional is zero (within floating point tolerance)
-        if (!portfolio_id.empty()) {
-            auto it = portfolio_notional_.find(portfolio_id);
-            if (it != portfolio_notional_.end() && std::abs(it->second) < 1e-9) {
-                portfolio_notional_.erase(it);
-            }
-        }
+        position_data_.clear();
+        open_data_.clear();
+        in_flight_data_.clear();
     }
 };
 
@@ -221,24 +414,70 @@ private:
 
 namespace metrics {
 
-template<typename Provider>
-void NotionalMetrics<Provider>::on_order_added(const engine::TrackedOrder& order) {
-    add_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_order_added(const engine::TrackedOrder& order) {
+    // New orders always start in IN_FLIGHT stage
+    in_flight_data_.add(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-template<typename Provider>
-void NotionalMetrics<Provider>::on_order_removed(const engine::TrackedOrder& order) {
-    remove_order(order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_order_removed(const engine::TrackedOrder& order) {
+    // Remove from appropriate stage based on current state
+    auto stage = aggregation::stage_from_order_state(order.state);
+    get_stage_data(stage).remove(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-template<typename Provider>
-void NotionalMetrics<Provider>::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
-    update_order(order.symbol, order.strategy_id, order.portfolio_id, old_qty, order.leaves_qty);
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    // Update in appropriate stage based on current state
+    auto stage = aggregation::stage_from_order_state(order.state);
+    auto& data = get_stage_data(stage);
+    data.remove(provider_, order.symbol, order.strategy_id, order.portfolio_id, old_qty);
+    data.add(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
-template<typename Provider>
-void NotionalMetrics<Provider>::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
-    partial_fill(order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    // Reduce open stage by filled quantity
+    open_data_.remove(provider_, order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
+    // Credit position stage with filled quantity
+    position_data_.add(provider_, order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
+}
+
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    // Credit position stage with final fill quantity
+    position_data_.add(provider_, order.symbol, order.strategy_id, order.portfolio_id, filled_qty);
+    // Note: The order will be removed from open/in_flight via on_order_removed
+}
+
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_state_change(const engine::TrackedOrder& order,
+                                                            engine::OrderState old_state,
+                                                            engine::OrderState new_state) {
+    auto old_stage = aggregation::stage_from_order_state(old_state);
+    auto new_stage = aggregation::stage_from_order_state(new_state);
+
+    if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
+        // Move from old stage to new stage
+        get_stage_data(old_stage).remove(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
+        get_stage_data(new_stage).add(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
+    }
+}
+
+template<typename Provider, typename... Stages>
+void NotionalMetrics<Provider, Stages...>::on_order_updated_with_state_change(
+    const engine::TrackedOrder& order,
+    int64_t old_qty,
+    engine::OrderState old_state,
+    engine::OrderState new_state) {
+
+    auto old_stage = aggregation::stage_from_order_state(old_state);
+    auto new_stage = aggregation::stage_from_order_state(new_state);
+
+    // Remove old_qty from old stage, add new_qty (leaves_qty) to new stage
+    get_stage_data(old_stage).remove(provider_, order.symbol, order.strategy_id, order.portfolio_id, old_qty);
+    get_stage_data(new_stage).add(provider_, order.symbol, order.strategy_id, order.portfolio_id, order.leaves_qty);
 }
 
 } // namespace metrics
@@ -255,14 +494,15 @@ void NotionalMetrics<Provider>::on_partial_fill(const engine::TrackedOrder& orde
 
 namespace engine {
 
-template<typename Derived, typename Provider>
-class AccessorMixin<Derived, metrics::NotionalMetrics<Provider>> {
+template<typename Derived, typename Provider, typename... Stages>
+class AccessorMixin<Derived, metrics::NotionalMetrics<Provider, Stages...>> {
 protected:
-    const metrics::NotionalMetrics<Provider>& notional_metrics_() const {
-        return static_cast<const Derived*>(this)->template get_metric<metrics::NotionalMetrics<Provider>>();
+    const metrics::NotionalMetrics<Provider, Stages...>& notional_metrics_() const {
+        return static_cast<const Derived*>(this)->template get_metric<metrics::NotionalMetrics<Provider, Stages...>>();
     }
 
 public:
+    // Combined accessors
     double global_notional() const {
         return notional_metrics_().global_notional();
     }
@@ -275,9 +515,21 @@ public:
         return notional_metrics_().portfolio_notional(portfolio_id);
     }
 
-    // Quantity accessor
     int64_t global_quantity() const {
         return notional_metrics_().global_quantity();
+    }
+
+    // Per-stage accessors
+    double position_notional() const {
+        return notional_metrics_().position_notional();
+    }
+
+    double open_notional() const {
+        return notional_metrics_().open_notional();
+    }
+
+    double in_flight_notional() const {
+        return notional_metrics_().in_flight_notional();
     }
 };
 

@@ -27,7 +27,8 @@ namespace engine {
 // Example usage:
 //   using Provider = instrument::StaticInstrumentProvider;
 //   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider,
-//       metrics::DeltaMetrics<Provider>, metrics::OrderCountMetrics>;
+//       metrics::DeltaMetrics<Provider, aggregation::AllStages>,
+//       metrics::OrderCountMetrics<aggregation::AllStages>>;
 //
 //   EngineWithLimits engine;
 //   engine.set_quoted_instruments_limit("AAPL", 5);
@@ -47,6 +48,11 @@ private:
     StringLimitStore net_delta_limits_;
     StringLimitStore strategy_notional_limits_;
     StringLimitStore portfolio_notional_limits_;
+
+    // Type aliases for finding the correct metric types
+    using OrderCountMetricType = order_count_metric_t<Metrics...>;
+    using DeltaMetricType = delta_metric_t<Metrics...>;
+    using NotionalMetricType = notional_metric_t<Metrics...>;
 
 public:
     using provider_type = Provider;
@@ -146,22 +152,22 @@ public:
 
     // Get current quoted instruments count
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, int64_t>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, int64_t>
     quoted_instruments_count(const std::string& underlyer) const {
-        return get_metric<metrics::OrderCountMetrics>().quoted_instruments_count(underlyer);
+        return get_metric<OrderCountMetricType>().quoted_instruments_count(underlyer);
     }
 
     // Check if an instrument is already quoted (has orders)
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, bool>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, bool>
     is_instrument_quoted(const std::string& symbol) const {
-        const auto& m = get_metric<metrics::OrderCountMetrics>();
+        const auto& m = get_metric<OrderCountMetricType>();
         return (m.bid_order_count(symbol) + m.ask_order_count(symbol)) > 0;
     }
 
     // Check if adding a new order on symbol/underlyer would breach the limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, bool>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, bool>
     would_breach_quoted_instruments_limit(const std::string& underlyer,
                                           const std::string& symbol) const {
         // If instrument already has orders, adding more won't increase the count
@@ -176,21 +182,21 @@ public:
 
     // Forwarded accessors for OrderCountMetrics
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, int64_t>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, int64_t>
     bid_order_count(const std::string& symbol) const {
-        return get_metric<metrics::OrderCountMetrics>().bid_order_count(symbol);
+        return get_metric<OrderCountMetricType>().bid_order_count(symbol);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, int64_t>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, int64_t>
     ask_order_count(const std::string& symbol) const {
-        return get_metric<metrics::OrderCountMetrics>().ask_order_count(symbol);
+        return get_metric<OrderCountMetricType>().ask_order_count(symbol);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::OrderCountMetrics, Metrics...>, int64_t>
+    std::enable_if_t<has_order_count_metric_v<Metrics...>, int64_t>
     total_order_count(const std::string& symbol) const {
-        return get_metric<metrics::OrderCountMetrics>().total_order_count(symbol);
+        return get_metric<OrderCountMetricType>().total_order_count(symbol);
     }
 
     // ========================================================================
@@ -231,43 +237,43 @@ public:
 
     // Check if adding delta_exposure would breach gross delta limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, bool>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, bool>
     would_breach_gross_delta_limit(const std::string& underlyer, double delta_exposure) const {
-        double current = get_metric<metrics::DeltaMetrics<Provider>>().underlyer_gross_delta(underlyer);
+        double current = get_metric<DeltaMetricType>().underlyer_gross_delta(underlyer);
         return gross_delta_limits_.would_breach(underlyer, current, std::abs(delta_exposure));
     }
 
     // Check if adding signed_delta would breach net delta limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, bool>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, bool>
     would_breach_net_delta_limit(const std::string& underlyer, double signed_delta) const {
-        double current = get_metric<metrics::DeltaMetrics<Provider>>().underlyer_net_delta(underlyer);
+        double current = get_metric<DeltaMetricType>().underlyer_net_delta(underlyer);
         return net_delta_limits_.would_breach(underlyer, current, signed_delta);
     }
 
     // Forwarded accessors for DeltaMetrics
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, double>
     global_gross_delta() const {
-        return get_metric<metrics::DeltaMetrics<Provider>>().global_gross_delta();
+        return get_metric<DeltaMetricType>().global_gross_delta();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, double>
     global_net_delta() const {
-        return get_metric<metrics::DeltaMetrics<Provider>>().global_net_delta();
+        return get_metric<DeltaMetricType>().global_net_delta();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, double>
     underlyer_gross_delta(const std::string& underlyer) const {
-        return get_metric<metrics::DeltaMetrics<Provider>>().underlyer_gross_delta(underlyer);
+        return get_metric<DeltaMetricType>().underlyer_gross_delta(underlyer);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::DeltaMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_delta_metric_v<Metrics...>, double>
     underlyer_net_delta(const std::string& underlyer) const {
-        return get_metric<metrics::DeltaMetrics<Provider>>().underlyer_net_delta(underlyer);
+        return get_metric<DeltaMetricType>().underlyer_net_delta(underlyer);
     }
 
     // ========================================================================
@@ -300,37 +306,37 @@ public:
 
     // Check if adding notional would breach strategy limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, bool>
+    std::enable_if_t<has_notional_metric_v<Metrics...>, bool>
     would_breach_strategy_notional_limit(const std::string& strategy_id, double notional) const {
-        double current = get_metric<metrics::NotionalMetrics<Provider>>().strategy_notional(strategy_id);
+        double current = get_metric<NotionalMetricType>().strategy_notional(strategy_id);
         return strategy_notional_limits_.would_breach(strategy_id, current, notional);
     }
 
     // Check if adding notional would breach portfolio limit
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, bool>
+    std::enable_if_t<has_notional_metric_v<Metrics...>, bool>
     would_breach_portfolio_notional_limit(const std::string& portfolio_id, double notional) const {
-        double current = get_metric<metrics::NotionalMetrics<Provider>>().portfolio_notional(portfolio_id);
+        double current = get_metric<NotionalMetricType>().portfolio_notional(portfolio_id);
         return portfolio_notional_limits_.would_breach(portfolio_id, current, notional);
     }
 
     // Forwarded accessors for NotionalMetrics
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_notional_metric_v<Metrics...>, double>
     global_notional() const {
-        return get_metric<metrics::NotionalMetrics<Provider>>().global_notional();
+        return get_metric<NotionalMetricType>().global_notional();
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_notional_metric_v<Metrics...>, double>
     strategy_notional(const std::string& strategy_id) const {
-        return get_metric<metrics::NotionalMetrics<Provider>>().strategy_notional(strategy_id);
+        return get_metric<NotionalMetricType>().strategy_notional(strategy_id);
     }
 
     template<typename M = void>
-    std::enable_if_t<contains_type_v<metrics::NotionalMetrics<Provider>, Metrics...>, double>
+    std::enable_if_t<has_notional_metric_v<Metrics...>, double>
     portfolio_notional(const std::string& portfolio_id) const {
-        return get_metric<metrics::NotionalMetrics<Provider>>().portfolio_notional(portfolio_id);
+        return get_metric<NotionalMetricType>().portfolio_notional(portfolio_id);
     }
 };
 
@@ -340,27 +346,27 @@ public:
 
 using DefaultProvider = instrument::StaticInstrumentProvider;
 
-// Standard engine with all metrics and limits
+// Standard engine with all metrics and limits (using AllStages)
 using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithLimits<
     DefaultProvider,
-    metrics::DeltaMetrics<DefaultProvider>,
-    metrics::OrderCountMetrics,
-    metrics::NotionalMetrics<DefaultProvider>
+    metrics::DeltaMetrics<DefaultProvider, aggregation::AllStages>,
+    metrics::OrderCountMetrics<aggregation::AllStages>,
+    metrics::NotionalMetrics<DefaultProvider, aggregation::AllStages>
 >;
 
 // Order count only with limits (useful for quoted instrument limits)
 using OrderCountEngineWithLimits = RiskAggregationEngineWithLimits<
     DefaultProvider,
-    metrics::OrderCountMetrics
+    metrics::OrderCountMetrics<aggregation::AllStages>
 >;
 
 // Template alias for custom provider types
 template<typename Provider>
 using RiskAggregationEngineWithAllLimitsUsing = RiskAggregationEngineWithLimits<
     Provider,
-    metrics::DeltaMetrics<Provider>,
-    metrics::OrderCountMetrics,
-    metrics::NotionalMetrics<Provider>
+    metrics::DeltaMetrics<Provider, aggregation::AllStages>,
+    metrics::OrderCountMetrics<aggregation::AllStages>,
+    metrics::NotionalMetrics<Provider, aggregation::AllStages>
 >;
 
 } // namespace engine

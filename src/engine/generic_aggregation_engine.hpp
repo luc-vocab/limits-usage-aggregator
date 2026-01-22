@@ -2,6 +2,7 @@
 
 #include "accessor_mixin.hpp"
 #include "order_state.hpp"
+#include "../aggregation/order_stage.hpp"
 #include "../fix/fix_messages.hpp"
 #include "../instrument/instrument.hpp"
 #include <tuple>
@@ -130,14 +131,30 @@ public:
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
+        OrderState old_state = order->state;
         order_book_.start_replace(msg.orig_key, msg.key, msg.price, msg.quantity);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void on_order_cancel_request(const fix::OrderCancelRequest& msg) {
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
+        OrderState old_state = order->state;
         order_book_.start_cancel(msg.orig_key, msg.key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     // ========================================================================
@@ -175,10 +192,21 @@ public:
     }
 
     void on_order_cancel_reject(const fix::OrderCancelReject& msg) {
+        auto* order = order_book_.get_order(msg.orig_key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         if (msg.report_type() == fix::ExecutionReportType::CANCEL_NACK) {
             order_book_.reject_cancel(msg.orig_key);
         } else {
             order_book_.reject_replace(msg.orig_key);
+        }
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
         }
     }
 
@@ -198,7 +226,18 @@ public:
 
 private:
     void handle_insert_ack(const fix::ExecutionReport& msg) {
+        auto* order = order_book_.get_order(msg.key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         order_book_.acknowledge_order(msg.key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void handle_insert_nack(const fix::ExecutionReport& msg) {
@@ -217,14 +256,34 @@ private:
         auto* order = order_book_.get_order(orig_key);
         if (!order) return;
 
+        // Capture old state and quantity BEFORE complete_replace updates them
+        OrderState old_state = order->state;
+        int64_t old_leaves_qty = order->leaves_qty;
+
         auto result = order_book_.complete_replace(orig_key);
         if (result.has_value()) {
             auto* updated_order = order_book_.resolve_order(msg.key);
             if (updated_order) {
-                int64_t old_qty = result->old_leaves_qty;
-                for_each_metric([updated_order, old_qty](auto& metric) {
-                    metric.on_order_updated(*updated_order, old_qty);
-                });
+                OrderState new_state = updated_order->state;
+
+                // For stage transitions, we need to move the OLD quantity from old stage to new stage
+                // Then update the quantity in the new stage
+                auto old_stage = aggregation::stage_from_order_state(old_state);
+                auto new_stage = aggregation::stage_from_order_state(new_state);
+
+                if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
+                    // First: remove old_qty from old stage and add old_qty to new stage
+                    // Second: update from old_qty to new_qty in new stage
+                    // These can be combined: remove old_qty from old stage, add new_qty to new stage
+                    for_each_metric([updated_order, old_leaves_qty, old_state, new_state](auto& metric) {
+                        metric.on_order_updated_with_state_change(*updated_order, old_leaves_qty, old_state, new_state);
+                    });
+                } else {
+                    // Same stage, just quantity update
+                    for_each_metric([updated_order, old_leaves_qty](auto& metric) {
+                        metric.on_order_updated(*updated_order, old_leaves_qty);
+                    });
+                }
             }
         }
     }
@@ -248,7 +307,18 @@ private:
 
     void handle_cancel_nack(const fix::ExecutionReport& msg) {
         fix::OrderKey orig_key = msg.orig_key.value_or(msg.key);
+        auto* order = order_book_.get_order(orig_key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         order_book_.reject_cancel(orig_key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void handle_partial_fill(const fix::ExecutionReport& msg) {
@@ -350,14 +420,30 @@ public:
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
+        OrderState old_state = order->state;
         order_book_.start_replace(msg.orig_key, msg.key, msg.price, msg.quantity);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void on_order_cancel_request(const fix::OrderCancelRequest& msg) {
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
+        OrderState old_state = order->state;
         order_book_.start_cancel(msg.orig_key, msg.key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     // ========================================================================
@@ -395,10 +481,21 @@ public:
     }
 
     void on_order_cancel_reject(const fix::OrderCancelReject& msg) {
+        auto* order = order_book_.get_order(msg.orig_key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         if (msg.report_type() == fix::ExecutionReportType::CANCEL_NACK) {
             order_book_.reject_cancel(msg.orig_key);
         } else {
             order_book_.reject_replace(msg.orig_key);
+        }
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
         }
     }
 
@@ -418,7 +515,18 @@ public:
 
 private:
     void handle_insert_ack(const fix::ExecutionReport& msg) {
+        auto* order = order_book_.get_order(msg.key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         order_book_.acknowledge_order(msg.key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void handle_insert_nack(const fix::ExecutionReport& msg) {
@@ -437,14 +545,34 @@ private:
         auto* order = order_book_.get_order(orig_key);
         if (!order) return;
 
+        // Capture old state and quantity BEFORE complete_replace updates them
+        OrderState old_state = order->state;
+        int64_t old_leaves_qty = order->leaves_qty;
+
         auto result = order_book_.complete_replace(orig_key);
         if (result.has_value()) {
             auto* updated_order = order_book_.resolve_order(msg.key);
             if (updated_order) {
-                int64_t old_qty = result->old_leaves_qty;
-                for_each_metric([updated_order, old_qty](auto& metric) {
-                    metric.on_order_updated(*updated_order, old_qty);
-                });
+                OrderState new_state = updated_order->state;
+
+                // For stage transitions, we need to move the OLD quantity from old stage to new stage
+                // Then update the quantity in the new stage
+                auto old_stage = aggregation::stage_from_order_state(old_state);
+                auto new_stage = aggregation::stage_from_order_state(new_state);
+
+                if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
+                    // First: remove old_qty from old stage and add old_qty to new stage
+                    // Second: update from old_qty to new_qty in new stage
+                    // These can be combined: remove old_qty from old stage, add new_qty to new stage
+                    for_each_metric([updated_order, old_leaves_qty, old_state, new_state](auto& metric) {
+                        metric.on_order_updated_with_state_change(*updated_order, old_leaves_qty, old_state, new_state);
+                    });
+                } else {
+                    // Same stage, just quantity update
+                    for_each_metric([updated_order, old_leaves_qty](auto& metric) {
+                        metric.on_order_updated(*updated_order, old_leaves_qty);
+                    });
+                }
             }
         }
     }
@@ -468,7 +596,18 @@ private:
 
     void handle_cancel_nack(const fix::ExecutionReport& msg) {
         fix::OrderKey orig_key = msg.orig_key.value_or(msg.key);
+        auto* order = order_book_.get_order(orig_key);
+        if (!order) return;
+
+        OrderState old_state = order->state;
         order_book_.reject_cancel(orig_key);
+        OrderState new_state = order->state;
+
+        if (old_state != new_state) {
+            for_each_metric([order, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, old_state, new_state);
+            });
+        }
     }
 
     void handle_partial_fill(const fix::ExecutionReport& msg) {

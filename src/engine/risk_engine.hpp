@@ -15,38 +15,39 @@ namespace engine {
 // ============================================================================
 //
 // The engine is now templated on Provider type first, then metrics.
-// Use the default StaticInstrumentProvider for convenience aliases.
+// All metrics now explicitly define their tracked stages via template parameters.
+// Using AllStages tracks Position, Open, and InFlight stages.
 //
 
 using DefaultProvider = instrument::StaticInstrumentProvider;
 
-// Standard engine with all built-in metrics (using default provider)
+// Standard engine with all built-in metrics (tracking all stages by default)
 using RiskAggregationEngine = GenericRiskAggregationEngine<
     DefaultProvider,
-    metrics::DeltaMetrics<DefaultProvider>,
-    metrics::OrderCountMetrics,
-    metrics::NotionalMetrics<DefaultProvider>
+    metrics::DeltaMetrics<DefaultProvider, aggregation::AllStages>,
+    metrics::OrderCountMetrics<aggregation::AllStages>,
+    metrics::NotionalMetrics<DefaultProvider, aggregation::AllStages>
 >;
 
 // Alias for backward compatibility
 using StandardRiskEngine = RiskAggregationEngine;
 
-// Engine with only delta metrics
+// Engine with only delta metrics (all stages)
 using DeltaOnlyEngine = GenericRiskAggregationEngine<
     DefaultProvider,
-    metrics::DeltaMetrics<DefaultProvider>
+    metrics::DeltaMetrics<DefaultProvider, aggregation::AllStages>
 >;
 
-// Engine with only order count metrics (no provider needed)
+// Engine with only order count metrics (all stages, no provider needed)
 using OrderCountOnlyEngine = GenericRiskAggregationEngine<
     DefaultProvider,
-    metrics::OrderCountMetrics
+    metrics::OrderCountMetrics<aggregation::AllStages>
 >;
 
-// Engine with only notional metrics
+// Engine with only notional metrics (all stages)
 using NotionalOnlyEngine = GenericRiskAggregationEngine<
     DefaultProvider,
-    metrics::NotionalMetrics<DefaultProvider>
+    metrics::NotionalMetrics<DefaultProvider, aggregation::AllStages>
 >;
 
 // ============================================================================
@@ -61,21 +62,59 @@ using NotionalOnlyEngine = GenericRiskAggregationEngine<
 template<typename Provider>
 using RiskAggregationEngineWith = GenericRiskAggregationEngine<
     Provider,
-    metrics::DeltaMetrics<Provider>,
-    metrics::OrderCountMetrics,
-    metrics::NotionalMetrics<Provider>
+    metrics::DeltaMetrics<Provider, aggregation::AllStages>,
+    metrics::OrderCountMetrics<aggregation::AllStages>,
+    metrics::NotionalMetrics<Provider, aggregation::AllStages>
 >;
 
 template<typename Provider>
 using DeltaOnlyEngineWith = GenericRiskAggregationEngine<
     Provider,
-    metrics::DeltaMetrics<Provider>
+    metrics::DeltaMetrics<Provider, aggregation::AllStages>
 >;
 
 template<typename Provider>
 using NotionalOnlyEngineWith = GenericRiskAggregationEngine<
     Provider,
-    metrics::NotionalMetrics<Provider>
+    metrics::NotionalMetrics<Provider, aggregation::AllStages>
+>;
+
+// ============================================================================
+// Template aliases for custom stage configurations
+// ============================================================================
+//
+// Use these for engines that only track specific stages:
+//
+//   // Track only open and in-flight orders (no position tracking)
+//   using ActiveOrdersEngine = StagedRiskEngine<
+//       DefaultProvider,
+//       aggregation::OpenStage, aggregation::InFlightStage>;
+//
+
+template<typename Provider, typename... Stages>
+using StagedRiskEngine = GenericRiskAggregationEngine<
+    Provider,
+    metrics::DeltaMetrics<Provider, Stages...>,
+    metrics::OrderCountMetrics<Stages...>,
+    metrics::NotionalMetrics<Provider, Stages...>
+>;
+
+template<typename Provider, typename... Stages>
+using StagedDeltaOnlyEngine = GenericRiskAggregationEngine<
+    Provider,
+    metrics::DeltaMetrics<Provider, Stages...>
+>;
+
+template<typename... Stages>
+using StagedOrderCountOnlyEngine = GenericRiskAggregationEngine<
+    void,
+    metrics::OrderCountMetrics<Stages...>
+>;
+
+template<typename Provider, typename... Stages>
+using StagedNotionalOnlyEngine = GenericRiskAggregationEngine<
+    Provider,
+    metrics::NotionalMetrics<Provider, Stages...>
 >;
 
 } // namespace engine

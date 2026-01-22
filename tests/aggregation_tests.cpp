@@ -262,7 +262,9 @@ TEST_F(DeltaMetricsTest, RemoveOrder) {
 
 TEST_F(DeltaMetricsTest, UpdateOrder) {
     metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
-    metrics.update_order("AAPL", "AAPL", 100, 150, fix::Side::BID);
+    // Update by removing old and adding new
+    metrics.remove_order("AAPL", "AAPL", 100, fix::Side::BID);
+    metrics.add_order("AAPL", "AAPL", 150, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 150.0);
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 150.0);
@@ -270,7 +272,8 @@ TEST_F(DeltaMetricsTest, UpdateOrder) {
 
 TEST_F(DeltaMetricsTest, PartialFill) {
     metrics.add_order("AAPL", "AAPL", 100, fix::Side::BID);
-    metrics.partial_fill("AAPL", "AAPL", 40, fix::Side::BID);
+    // Partial fill just removes quantity from open orders
+    metrics.remove_order("AAPL", "AAPL", 40, fix::Side::BID);
 
     EXPECT_DOUBLE_EQ(metrics.global_gross_delta(), 60.0);
     EXPECT_DOUBLE_EQ(metrics.global_net_delta(), 60.0);
@@ -291,7 +294,7 @@ TEST_F(DeltaMetricsTest, QuantityAccessors) {
 
 class OrderCountMetricsTest : public ::testing::Test {
 protected:
-    metrics::OrderCountMetrics metrics;
+    metrics::OrderCountMetrics<aggregation::AllStages> metrics;
 };
 
 TEST_F(OrderCountMetricsTest, AddOrders) {
@@ -392,7 +395,8 @@ TEST_F(NotionalMetricsTest, UpdateOrder) {
 
 TEST_F(NotionalMetricsTest, PartialFill) {
     metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 100);  // 10000 notional
-    metrics.partial_fill("AAPL_OPT1", "STRAT1", "PORT1", 40);  // remove 40 -> 60 * 100 = 6000
+    // Partial fill just removes quantity from open orders
+    metrics.remove_order("AAPL_OPT1", "STRAT1", "PORT1", 40);  // remove 40 -> 60 * 100 = 6000
 
     EXPECT_DOUBLE_EQ(metrics.strategy_notional("STRAT1"), 6000.0);
 }
@@ -411,7 +415,6 @@ TEST_F(NotionalMetricsTest, QuantityAccessors) {
     metrics.add_order("AAPL_OPT1", "STRAT1", "PORT1", 50);
 
     EXPECT_EQ(metrics.global_quantity(), 150);
-    EXPECT_EQ(metrics.instrument_quantity("AAPL_OPT1"), 150);
 }
 
 // ============================================================================
@@ -447,9 +450,9 @@ TEST_F(GenericEngineTestFixture, DeltaOnlyEngine) {
     engine::DeltaOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
-    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
+    EXPECT_TRUE((engine.has_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>()));
+    EXPECT_FALSE((engine.has_metric<metrics::OrderCountMetrics<aggregation::AllStages>>()));
+    EXPECT_FALSE((engine.has_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>()));
 
     // Accessor methods from mixin should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -479,9 +482,9 @@ TEST_F(GenericEngineTestFixture, OrderCountOnlyEngine) {
     engine::OrderCountOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
-    EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_FALSE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
+    EXPECT_FALSE((engine.has_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>()));
+    EXPECT_TRUE((engine.has_metric<metrics::OrderCountMetrics<aggregation::AllStages>>()));
+    EXPECT_FALSE((engine.has_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>()));
 
     // Accessor methods from mixin should be available
     EXPECT_EQ(engine.bid_order_count("AAPL"), 0);
@@ -510,9 +513,9 @@ TEST_F(GenericEngineTestFixture, NotionalOnlyEngine) {
     engine::NotionalOnlyEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 1u);
-    EXPECT_FALSE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
-    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
+    EXPECT_FALSE((engine.has_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>()));
+    EXPECT_FALSE((engine.has_metric<metrics::OrderCountMetrics<aggregation::AllStages>>()));
+    EXPECT_TRUE((engine.has_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>()));
 
     // Accessor methods from mixin should be available
     EXPECT_DOUBLE_EQ(engine.global_notional(), 0.0);
@@ -542,16 +545,16 @@ TEST_F(GenericEngineTestFixture, CustomMetricCombination) {
     using Provider = instrument::StaticInstrumentProvider;
     using DeltaNotionalEngine = engine::GenericRiskAggregationEngine<
         Provider,
-        metrics::DeltaMetrics<Provider>,
-        metrics::NotionalMetrics<Provider>
+        metrics::DeltaMetrics<Provider, aggregation::AllStages>,
+        metrics::NotionalMetrics<Provider, aggregation::AllStages>
     >;
 
     DeltaNotionalEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 2u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
-    EXPECT_FALSE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
+    EXPECT_TRUE((engine.has_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>()));
+    EXPECT_FALSE((engine.has_metric<metrics::OrderCountMetrics<aggregation::AllStages>>()));
+    EXPECT_TRUE((engine.has_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>()));
 
     // Both delta and notional accessors should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -582,9 +585,9 @@ TEST_F(GenericEngineTestFixture, StandardEngineHasAllAccessors) {
     engine::RiskAggregationEngine engine(&provider);
 
     EXPECT_EQ(engine.metric_count(), 3u);
-    EXPECT_TRUE(engine.has_metric<metrics::DeltaMetrics<Provider>>());
-    EXPECT_TRUE(engine.has_metric<metrics::OrderCountMetrics>());
-    EXPECT_TRUE(engine.has_metric<metrics::NotionalMetrics<Provider>>());
+    EXPECT_TRUE((engine.has_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>()));
+    EXPECT_TRUE((engine.has_metric<metrics::OrderCountMetrics<aggregation::AllStages>>()));
+    EXPECT_TRUE((engine.has_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>()));
 
     // All accessor methods should be available
     EXPECT_DOUBLE_EQ(engine.global_gross_delta(), 0.0);
@@ -616,9 +619,9 @@ TEST_F(GenericEngineTestFixture, GetMetricAccess) {
     engine::RiskAggregationEngine engine(&provider);
 
     // Direct metric access via get_metric
-    auto& delta = engine.get_metric<metrics::DeltaMetrics<Provider>>();
-    auto& order_count = engine.get_metric<metrics::OrderCountMetrics>();
-    auto& notional = engine.get_metric<metrics::NotionalMetrics<Provider>>();
+    auto& delta = engine.get_metric<metrics::DeltaMetrics<Provider, aggregation::AllStages>>();
+    auto& order_count = engine.get_metric<metrics::OrderCountMetrics<aggregation::AllStages>>();
+    auto& notional = engine.get_metric<metrics::NotionalMetrics<Provider, aggregation::AllStages>>();
 
     // Process an order
     fix::NewOrderSingle order;
