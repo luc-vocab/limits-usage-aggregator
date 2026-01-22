@@ -114,15 +114,15 @@ SimpleInstrumentProvider create_stock_provider() {
 // For equities, notional = quantity * spot_price (contract_size=1, fx_rate=1).
 //
 // Metrics used:
-//   - GlobalNotional: NotionalMetric<GlobalKey, Provider, OpenStage, InFlightStage>
+//   - GlobalNotional: NotionalMetric<GlobalKey, InstrumentData, OpenStage, InFlightStage>
 //
 
 class GrossOpenNotionalTest : public ::testing::Test {
 protected:
-    using GlobalNotional = GlobalNotionalMetric<SimpleInstrumentProvider, OpenStage, InFlightStage>;
+    using GlobalNotional = GlobalNotionalMetric<InstrumentData, OpenStage, InFlightStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        SimpleInstrumentProvider,
+        InstrumentData,
         GlobalNotional
     >;
 
@@ -134,7 +134,6 @@ protected:
 
     void SetUp() override {
         provider = create_stock_provider();
-        engine.set_instrument_provider(&provider);
         engine.set_limit<GlobalNotional>(GlobalKey::instance(), MAX_GROSS_NOTIONAL);
     }
 
@@ -148,85 +147,102 @@ protected:
         // With defaults: contract_size=1, fx_rate=1
         return static_cast<double>(qty) * provider.get_spot_price(symbol);
     }
+
+    // Helper to get instrument from provider
+    InstrumentData get_instrument(const std::string& symbol) const {
+        return provider.get_instrument(symbol);
+    }
 };
 
 TEST_F(GrossOpenNotionalTest, SingleOrderLifecycle) {
     // Step 1: Send order (100 shares of AAPL at $150 = $15,000 notional)
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
+    auto order = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
 
     double expected_notional = 100 * 150.0;  // 15,000
     EXPECT_DOUBLE_EQ(gross_notional(), expected_notional) << "After INSERT";
 
     // Step 2: ACK order
-    engine.on_execution_report(create_ack("ORD001", 100));
+    engine.on_execution_report(create_ack("ORD001", 100), inst);
     EXPECT_DOUBLE_EQ(gross_notional(), expected_notional) << "After ACK (unchanged)";
 
     // Step 3: Partial fill (50 shares)
-    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0));
+    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0), inst);
     expected_notional = 50 * 150.0;  // 7,500 (50 shares remaining)
     EXPECT_DOUBLE_EQ(gross_notional(), expected_notional) << "After PARTIAL_FILL";
 
     // Step 4: Full fill
-    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0));
+    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0), inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 0.0) << "After FULL_FILL";
 }
 
 TEST_F(GrossOpenNotionalTest, MultipleStocks) {
     // Send orders for multiple stocks
     // AAPL: 100 * $150 = $15,000
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
+    auto aapl_order = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    engine.on_new_order_single(aapl_order, get_instrument(aapl_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0) << "After AAPL order";
 
     // MSFT: 50 * $300 = $15,000
-    engine.on_new_order_single(create_order("ORD002", "MSFT", Side::BID, 300.0, 50));
+    auto msft_order = create_order("ORD002", "MSFT", Side::BID, 300.0, 50);
+    engine.on_new_order_single(msft_order, get_instrument(msft_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "After MSFT order";
 
     // GOOG: 200 * $100 = $20,000
-    engine.on_new_order_single(create_order("ORD003", "GOOG", Side::ASK, 100.0, 200));
+    auto goog_order = create_order("ORD003", "GOOG", Side::ASK, 100.0, 200);
+    engine.on_new_order_single(goog_order, get_instrument(goog_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 50000.0) << "After GOOG order";
 
     // TSLA: 100 * $200 = $20,000
-    engine.on_new_order_single(create_order("ORD004", "TSLA", Side::ASK, 200.0, 100));
+    auto tsla_order = create_order("ORD004", "TSLA", Side::ASK, 200.0, 100);
+    engine.on_new_order_single(tsla_order, get_instrument(tsla_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 70000.0) << "After TSLA order";
 
     // ACK all orders
-    engine.on_execution_report(create_ack("ORD001", 100));
-    engine.on_execution_report(create_ack("ORD002", 50));
-    engine.on_execution_report(create_ack("ORD003", 200));
-    engine.on_execution_report(create_ack("ORD004", 100));
+    engine.on_execution_report(create_ack("ORD001", 100), get_instrument("AAPL"));
+    engine.on_execution_report(create_ack("ORD002", 50), get_instrument("MSFT"));
+    engine.on_execution_report(create_ack("ORD003", 200), get_instrument("GOOG"));
+    engine.on_execution_report(create_ack("ORD004", 100), get_instrument("TSLA"));
 
     EXPECT_DOUBLE_EQ(gross_notional(), 70000.0) << "After all ACKs";
 }
 
 TEST_F(GrossOpenNotionalTest, BidAndAskBothCountTowardsGross) {
     // BID order: 100 * $150 = $15,000
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
+    auto bid_order = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    engine.on_new_order_single(bid_order, get_instrument(bid_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0);
 
     // ASK order: 100 * $150 = $15,000 (adds to gross, not subtracts)
-    engine.on_new_order_single(create_order("ORD002", "AAPL", Side::ASK, 150.0, 100));
+    auto ask_order = create_order("ORD002", "AAPL", Side::ASK, 150.0, 100);
+    engine.on_new_order_single(ask_order, get_instrument(ask_order.symbol));
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "Gross = |BID| + |ASK|";
 }
 
 TEST_F(GrossOpenNotionalTest, LimitEnforcement) {
     // Initial order: 100 * $150 = $15,000
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
+    auto order1 = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 100), inst1);
 
     // Pre-trade check for MSFT order (+$60,000 = $75,000 < $100,000)
     auto msft_order = create_order("ORD002", "MSFT", Side::BID, 300.0, 200);
-    auto result1 = engine.pre_trade_check(msft_order);
+    auto msft_inst = get_instrument(msft_order.symbol);
+    auto result1 = engine.pre_trade_check(msft_order, msft_inst);
     EXPECT_FALSE(result1.would_breach) << "Should not breach: 15000 + 60000 = 75000 < 100000";
 
     // Add more: 200 * $300 = $60,000 (total: $75,000)
-    engine.on_new_order_single(msft_order);
-    engine.on_execution_report(create_ack("ORD002", 200));
+    engine.on_new_order_single(msft_order, msft_inst);
+    engine.on_execution_report(create_ack("ORD002", 200), msft_inst);
 
     EXPECT_DOUBLE_EQ(gross_notional(), 75000.0);
 
     // Pre-trade check for GOOG order (+$30,000 = $105,000 > $100,000)
     auto goog_order = create_order("ORD003", "GOOG", Side::BID, 100.0, 300);
-    auto result2 = engine.pre_trade_check(goog_order);
+    auto goog_inst = get_instrument(goog_order.symbol);
+    auto result2 = engine.pre_trade_check(goog_order, goog_inst);
     EXPECT_TRUE(result2.would_breach) << "Should breach: 75000 + 30000 = 105000 > 100000";
     EXPECT_TRUE(result2.has_breach(LimitType::GLOBAL_NOTIONAL));
 
@@ -239,71 +255,83 @@ TEST_F(GrossOpenNotionalTest, LimitEnforcement) {
 }
 
 TEST_F(GrossOpenNotionalTest, NackFreesNotional) {
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
+    auto order = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0);
 
-    engine.on_execution_report(create_nack("ORD001"));
+    engine.on_execution_report(create_nack("ORD001"), inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 0.0) << "NACK should free notional";
 }
 
 TEST_F(GrossOpenNotionalTest, CancelFreesNotional) {
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
+    auto order = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
+    engine.on_execution_report(create_ack("ORD001", 100), inst);
 
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0);
 
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", "AAPL", Side::BID));
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD001", "AAPL", Side::BID), inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0) << "Pending cancel still counts";
 
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"));
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD001"), inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 0.0) << "Cancel should free notional";
 }
 
 TEST_F(GrossOpenNotionalTest, FullFlowWithAssertions) {
     // Step 1: INSERT ORD001 (AAPL BID 100 @ $150)
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
+    auto order1 = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto aapl_inst = get_instrument("AAPL");
+    engine.on_new_order_single(order1, aapl_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0) << "Step 1: After INSERT ORD001";
 
     // Step 2: INSERT ORD002 (MSFT ASK 50 @ $300) - short position
-    engine.on_new_order_single(create_order("ORD002", "MSFT", Side::ASK, 300.0, 50));
+    auto order2 = create_order("ORD002", "MSFT", Side::ASK, 300.0, 50);
+    auto msft_inst = get_instrument("MSFT");
+    engine.on_new_order_single(order2, msft_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "Step 2: After INSERT ORD002";
 
     // Step 3: ACK ORD001
-    engine.on_execution_report(create_ack("ORD001", 100));
+    engine.on_execution_report(create_ack("ORD001", 100), aapl_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "Step 3: After ACK ORD001";
 
     // Step 4: ACK ORD002
-    engine.on_execution_report(create_ack("ORD002", 50));
+    engine.on_execution_report(create_ack("ORD002", 50), msft_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "Step 4: After ACK ORD002";
 
     // Step 5: INSERT ORD003 (GOOG BID 200 @ $100)
-    engine.on_new_order_single(create_order("ORD003", "GOOG", Side::BID, 100.0, 200));
+    auto order3 = create_order("ORD003", "GOOG", Side::BID, 100.0, 200);
+    auto goog_inst = get_instrument("GOOG");
+    engine.on_new_order_single(order3, goog_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 50000.0) << "Step 5: After INSERT ORD003";
 
     // Step 6: NACK ORD003
-    engine.on_execution_report(create_nack("ORD003"));
+    engine.on_execution_report(create_nack("ORD003"), goog_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0) << "Step 6: After NACK ORD003";
 
     // Step 7: PARTIAL_FILL ORD001 (50 shares filled)
-    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0));
+    engine.on_execution_report(create_fill("ORD001", 50, 50, 150.0), aapl_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 22500.0) << "Step 7: After PARTIAL_FILL ORD001";
     // AAPL: 50 * 150 = 7500, MSFT: 50 * 300 = 15000, Total: 22500
 
     // Step 8: FULL_FILL ORD001
-    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0));
+    engine.on_execution_report(create_fill("ORD001", 50, 0, 150.0), aapl_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0) << "Step 8: After FULL_FILL ORD001";
 
     // Step 9: CANCEL ORD002
-    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", "MSFT", Side::ASK));
+    engine.on_order_cancel_request(create_cancel_request("CXL001", "ORD002", "MSFT", Side::ASK), msft_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 15000.0) << "Step 9: After CANCEL_REQ ORD002";
 
-    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"));
+    engine.on_execution_report(create_cancel_ack("CXL001", "ORD002"), msft_inst);
     EXPECT_DOUBLE_EQ(gross_notional(), 0.0) << "Step 9: After CANCEL_ACK ORD002";
 }
 
 TEST_F(GrossOpenNotionalTest, Clear) {
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
-    engine.on_new_order_single(create_order("ORD002", "MSFT", Side::ASK, 300.0, 50));
+    auto order1 = create_order("ORD001", "AAPL", Side::BID, 150.0, 100);
+    auto order2 = create_order("ORD002", "MSFT", Side::ASK, 300.0, 50);
+    engine.on_new_order_single(order1, get_instrument(order1.symbol));
+    engine.on_new_order_single(order2, get_instrument(order2.symbol));
 
     EXPECT_DOUBLE_EQ(gross_notional(), 30000.0);
 
@@ -314,12 +342,15 @@ TEST_F(GrossOpenNotionalTest, Clear) {
 
 TEST_F(GrossOpenNotionalTest, PreTradeCheckResultToString) {
     // Fill up to near the limit: $75,000
-    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 500));  // $75,000
-    engine.on_execution_report(create_ack("ORD001", 500));
+    auto order1 = create_order("ORD001", "AAPL", Side::BID, 150.0, 500);  // $75,000
+    auto aapl_inst = get_instrument("AAPL");
+    engine.on_new_order_single(order1, aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 500), aapl_inst);
 
     // Check pre-trade for order that would breach
     auto order = create_order("ORD002", "MSFT", Side::BID, 300.0, 100);  // $30,000
-    auto result = engine.pre_trade_check(order);
+    auto msft_inst = get_instrument("MSFT");
+    auto result = engine.pre_trade_check(order, msft_inst);
 
     EXPECT_TRUE(result.would_breach);
     EXPECT_EQ(result.breaches.size(), 1u);

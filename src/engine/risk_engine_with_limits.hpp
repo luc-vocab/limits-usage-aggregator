@@ -18,13 +18,13 @@ namespace engine {
 // and breach checking capabilities.
 //
 // Template parameters:
-//   - Provider: The InstrumentProvider type (use void for metrics that don't need a provider)
+//   - Instrument: The Instrument type (use void for metrics that don't need instrument data)
 //   - Metrics...: Zero or more metric types
 //
 // Each metric type must have:
 //   - key_type: The key type for the limit store
 //   - value_type: The value type tracked by the metric
-//   - static compute_order_contribution(order, provider): contribution for limit check
+//   - static compute_order_contribution(order, instrument): contribution for limit check
 //   - static extract_key(order): extract key from order
 //   - static limit_type(): the LimitType enum value
 //
@@ -35,78 +35,56 @@ namespace engine {
 //   engine.get_limit_store<MetricType>();
 //
 // Example usage:
-//   using Provider = instrument::StaticInstrumentProvider;
-//   using GrossDelta = metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>;
+//   using Instrument = instrument::InstrumentData;
+//   using GrossDelta = metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Instrument, aggregation::AllStages>;
 //   using OrderCount = metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>;
 //
-//   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider, GrossDelta, OrderCount>;
+//   using EngineWithLimits = RiskAggregationEngineWithLimits<Instrument, GrossDelta, OrderCount>;
 //
-//   EngineWithLimits engine(&provider);
+//   EngineWithLimits engine;
 //   engine.set_limit<GrossDelta>(aggregation::UnderlyerKey{"AAPL"}, 10000.0);
 //   engine.set_default_limit<OrderCount>(50.0);
-//   auto result = engine.pre_trade_check(order);
+//   auto instrument = provider.get_instrument(order.symbol);
+//   auto result = engine.pre_trade_check(order, instrument);
 //
 
-template<typename Provider, typename... Metrics>
+template<typename Instrument, typename... Metrics>
 class RiskAggregationEngineWithLimits {
 private:
-    GenericRiskAggregationEngine<Provider, Metrics...> engine_;
+    GenericRiskAggregationEngine<Instrument, Metrics...> engine_;
     MetricLimitStores<Metrics...> limits_;
 
 public:
-    using provider_type = Provider;
+    using instrument_type = Instrument;
 
     RiskAggregationEngineWithLimits() = default;
-
-    template<typename P = Provider, typename = std::enable_if_t<!std::is_void_v<P>>>
-    explicit RiskAggregationEngineWithLimits(const P* provider)
-        : engine_(provider) {}
 
     // ========================================================================
     // Forwarding to underlying engine
     // ========================================================================
 
-    GenericRiskAggregationEngine<Provider, Metrics...>& engine() { return engine_; }
-    const GenericRiskAggregationEngine<Provider, Metrics...>& engine() const { return engine_; }
+    GenericRiskAggregationEngine<Instrument, Metrics...>& engine() { return engine_; }
+    const GenericRiskAggregationEngine<Instrument, Metrics...>& engine() const { return engine_; }
 
-    template<typename P = Provider>
-    std::enable_if_t<!std::is_void_v<P>, void>
-    set_instrument_provider(const P* provider) {
-        engine_.set_instrument_provider(provider);
+    // Forward all message handlers - caller provides instrument
+    void on_new_order_single(const fix::NewOrderSingle& msg, const Instrument& instrument) {
+        engine_.on_new_order_single(msg, instrument);
     }
 
-    template<typename P = Provider>
-    std::enable_if_t<!std::is_void_v<P>, const P*>
-    instrument_provider() const {
-        return engine_.instrument_provider();
+    void on_order_cancel_replace(const fix::OrderCancelReplaceRequest& msg, const Instrument& instrument) {
+        engine_.on_order_cancel_replace(msg, instrument);
     }
 
-    // For void provider - return nullptr
-    template<typename P = Provider>
-    std::enable_if_t<std::is_void_v<P>, std::nullptr_t>
-    instrument_provider() const {
-        return nullptr;
+    void on_order_cancel_request(const fix::OrderCancelRequest& msg, const Instrument& instrument) {
+        engine_.on_order_cancel_request(msg, instrument);
     }
 
-    // Forward all message handlers
-    void on_new_order_single(const fix::NewOrderSingle& msg) {
-        engine_.on_new_order_single(msg);
+    void on_execution_report(const fix::ExecutionReport& msg, const Instrument& instrument) {
+        engine_.on_execution_report(msg, instrument);
     }
 
-    void on_order_cancel_replace(const fix::OrderCancelReplaceRequest& msg) {
-        engine_.on_order_cancel_replace(msg);
-    }
-
-    void on_order_cancel_request(const fix::OrderCancelRequest& msg) {
-        engine_.on_order_cancel_request(msg);
-    }
-
-    void on_execution_report(const fix::ExecutionReport& msg) {
-        engine_.on_execution_report(msg);
-    }
-
-    void on_order_cancel_reject(const fix::OrderCancelReject& msg) {
-        engine_.on_order_cancel_reject(msg);
+    void on_order_cancel_reject(const fix::OrderCancelReject& msg, const Instrument& instrument) {
+        engine_.on_order_cancel_reject(msg, instrument);
     }
 
     // Forward order book access
@@ -128,8 +106,8 @@ public:
 
     // Set position for a specific instrument across all metrics that support it
     // Signed quantity: positive = long, negative = short
-    void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
-        engine_.set_instrument_position(symbol, signed_quantity);
+    void set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument) {
+        engine_.set_instrument_position(symbol, signed_quantity, instrument);
     }
 
     // ========================================================================
@@ -148,7 +126,7 @@ public:
 
     template<typename Metric>
     static constexpr bool has_metric() {
-        return GenericRiskAggregationEngine<Provider, Metrics...>::template has_metric<Metric>();
+        return GenericRiskAggregationEngine<Instrument, Metrics...>::template has_metric<Metric>();
     }
 
     // ========================================================================
@@ -190,15 +168,15 @@ public:
 
     // Check if a new order would breach any configured limits
     // Returns a structured result with all breaches
-    PreTradeCheckResult pre_trade_check(const fix::NewOrderSingle& order) const {
+    PreTradeCheckResult pre_trade_check(const fix::NewOrderSingle& order, const Instrument& instrument) const {
         PreTradeCheckResult result;
-        check_all_limits<Metrics...>(order, result);
+        check_all_limits<Metrics...>(order, instrument, result);
         return result;
     }
 
     // Check if an order update would breach any configured limits
     // Returns a structured result with all breaches
-    PreTradeCheckResult pre_trade_check(const fix::OrderCancelReplaceRequest& update) const {
+    PreTradeCheckResult pre_trade_check(const fix::OrderCancelReplaceRequest& update, const Instrument& instrument) const {
         PreTradeCheckResult result;
 
         // Look up the existing order
@@ -208,25 +186,25 @@ public:
             return result;
         }
 
-        check_all_update_limits<Metrics...>(update, *existing, result);
+        check_all_update_limits<Metrics...>(update, *existing, instrument, result);
         return result;
     }
 
     // Check if a new order would breach a specific metric's limit
     template<typename Metric>
-    PreTradeCheckResult pre_trade_check_single(const fix::NewOrderSingle& order) const {
+    PreTradeCheckResult pre_trade_check_single(const fix::NewOrderSingle& order, const Instrument& instrument) const {
         PreTradeCheckResult result;
         if constexpr (is_quoted_instrument_metric<Metric>::value) {
-            check_quoted_instrument_limit<Metric>(order, result);
+            check_quoted_instrument_limit<Metric>(order, instrument, result);
         } else {
-            check_standard_limit<Metric>(order, result);
+            check_standard_limit<Metric>(order, instrument, result);
         }
         return result;
     }
 
     // Check if an order update would breach a specific metric's limit
     template<typename Metric>
-    PreTradeCheckResult pre_trade_check_single(const fix::OrderCancelReplaceRequest& update) const {
+    PreTradeCheckResult pre_trade_check_single(const fix::OrderCancelReplaceRequest& update, const Instrument& instrument) const {
         PreTradeCheckResult result;
 
         const TrackedOrder* existing = engine_.order_book().get_order(update.orig_key);
@@ -234,7 +212,7 @@ public:
             return result;
         }
 
-        check_standard_update_limit<Metric>(update, *existing, result);
+        check_standard_update_limit<Metric>(update, *existing, instrument, result);
         return result;
     }
 
@@ -254,57 +232,50 @@ private:
     // ========================================================================
 
     template<typename First, typename... Rest>
-    void check_all_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
-        check_metric_limit<First>(order, result);
+    void check_all_limits(const fix::NewOrderSingle& order, const Instrument& instrument, PreTradeCheckResult& result) const {
+        check_metric_limit<First>(order, instrument, result);
         if constexpr (sizeof...(Rest) > 0) {
-            check_all_limits<Rest...>(order, result);
+            check_all_limits<Rest...>(order, instrument, result);
         }
     }
 
     // Base case for empty pack
-    void check_all_limits(const fix::NewOrderSingle&, PreTradeCheckResult&) const {}
+    void check_all_limits(const fix::NewOrderSingle&, const Instrument&, PreTradeCheckResult&) const {}
 
     // Recursive helper for order update limit checking
     template<typename First, typename... Rest>
     void check_all_update_limits(const fix::OrderCancelReplaceRequest& update,
                                  const TrackedOrder& existing,
+                                 const Instrument& instrument,
                                  PreTradeCheckResult& result) const {
-        check_standard_update_limit<First>(update, existing, result);
+        check_standard_update_limit<First>(update, existing, instrument, result);
         if constexpr (sizeof...(Rest) > 0) {
-            check_all_update_limits<Rest...>(update, existing, result);
+            check_all_update_limits<Rest...>(update, existing, instrument, result);
         }
     }
 
     // Base case for empty pack
     void check_all_update_limits(const fix::OrderCancelReplaceRequest&,
                                  const TrackedOrder&,
+                                 const Instrument&,
                                  PreTradeCheckResult&) const {}
 
     // Check limit for a single metric
     template<typename Metric>
-    void check_metric_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+    void check_metric_limit(const fix::NewOrderSingle& order, const Instrument& instrument, PreTradeCheckResult& result) const {
         // Special handling for QuotedInstrumentCountMetric
         if constexpr (is_quoted_instrument_metric<Metric>::value) {
-            check_quoted_instrument_limit<Metric>(order, result);
+            check_quoted_instrument_limit<Metric>(order, instrument, result);
         } else {
-            check_standard_limit<Metric>(order, result);
-        }
-    }
-
-    // Helper to get provider pointer with correct type
-    auto get_provider_ptr() const {
-        if constexpr (std::is_void_v<Provider>) {
-            return static_cast<const void*>(nullptr);
-        } else {
-            return instrument_provider();
+            check_standard_limit<Metric>(order, instrument, result);
         }
     }
 
     // Standard limit check for metrics with compute_order_contribution
     template<typename Metric>
-    void check_standard_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+    void check_standard_limit(const fix::NewOrderSingle& order, const Instrument& instrument, PreTradeCheckResult& result) const {
         auto key = Metric::extract_key(order);
-        auto contribution = Metric::compute_order_contribution(order, get_provider_ptr());
+        auto contribution = Metric::compute_order_contribution(order, instrument);
         auto current = static_cast<double>(engine_.template get_metric<Metric>().get(key));
 
         const auto& store = limits_.template get<Metric>();
@@ -326,10 +297,11 @@ private:
     template<typename Metric>
     void check_standard_update_limit(const fix::OrderCancelReplaceRequest& update,
                                      const TrackedOrder& existing,
+                                     const Instrument& instrument,
                                      PreTradeCheckResult& result) const {
         // Extract key from the existing order (not the update request)
         auto key = extract_key_from_tracked_order<Metric>(existing);
-        auto contribution = Metric::compute_update_contribution(update, existing, get_provider_ptr());
+        auto contribution = Metric::compute_update_contribution(update, existing, instrument);
 
         // Skip if contribution is zero (e.g., order count doesn't change on update)
         if (contribution == 0) {
@@ -376,14 +348,14 @@ private:
 
     // Special limit check for QuotedInstrumentCountMetric
     template<typename Metric>
-    void check_quoted_instrument_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+    void check_quoted_instrument_limit(const fix::NewOrderSingle& order, const Instrument& instrument, PreTradeCheckResult& result) const {
         // Check if instrument already has orders - if so, won't increase quoted count
         if (is_instrument_already_quoted(order.symbol)) {
             return;
         }
 
         auto key = Metric::extract_key(order);
-        auto contribution = Metric::compute_order_contribution(order, get_provider_ptr());
+        auto contribution = Metric::compute_order_contribution(order, instrument);
         auto current = static_cast<double>(engine_.template get_metric<Metric>().get(key));
 
         const auto& store = limits_.template get<Metric>();
@@ -430,25 +402,26 @@ private:
 // Type aliases for common configurations with limits
 // ============================================================================
 
-using DefaultProvider = instrument::StaticInstrumentProvider;
+using DefaultInstrument = instrument::InstrumentData;
 
-// Template alias for custom provider types with new metric structure
-template<typename Provider>
+// Template alias for custom instrument types with new metric structure
+template<typename Instrument>
 using RiskAggregationEngineWithAllLimitsUsing = RiskAggregationEngineWithLimits<
-    Provider,
-    metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
-    metrics::NetDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
+    Instrument,
+    metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Instrument, aggregation::AllStages>,
+    metrics::NetDeltaMetric<aggregation::UnderlyerKey, Instrument, aggregation::AllStages>,
     metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>,
     metrics::QuotedInstrumentCountMetric<aggregation::AllStages>,
-    metrics::NotionalMetric<aggregation::GlobalKey, Provider, aggregation::AllStages>,
-    metrics::NotionalMetric<aggregation::StrategyKey, Provider, aggregation::AllStages>,
-    metrics::NotionalMetric<aggregation::PortfolioKey, Provider, aggregation::AllStages>
+    metrics::NotionalMetric<aggregation::GlobalKey, Instrument, aggregation::AllStages>,
+    metrics::NotionalMetric<aggregation::StrategyKey, Instrument, aggregation::AllStages>,
+    metrics::NotionalMetric<aggregation::PortfolioKey, Instrument, aggregation::AllStages>
 >;
 
 // Standard engine with all metrics and limits (using AllStages)
-using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithAllLimitsUsing<DefaultProvider>;
+using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithAllLimitsUsing<DefaultInstrument>;
 
 // Order count only with limits (useful for quoted instrument limits)
+// Uses void as Instrument type since order count metrics don't need instrument data
 using OrderCountEngineWithLimits = RiskAggregationEngineWithLimits<
     void,
     metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>,

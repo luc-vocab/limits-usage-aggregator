@@ -122,13 +122,13 @@ StaticInstrumentProvider create_vega_delta_provider() {
 class VegaDeltaCombinedTest : public ::testing::Test {
 protected:
     // Track only at position stage (filled orders)
-    using UnderlyerGrossDelta = UnderlyerGrossDeltaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerNetDelta = UnderlyerNetDeltaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerGrossVega = UnderlyerGrossVegaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerNetVega = UnderlyerNetVegaMetric<StaticInstrumentProvider, PositionStage>;
+    using UnderlyerGrossDelta = UnderlyerGrossDeltaMetric<InstrumentData, PositionStage>;
+    using UnderlyerNetDelta = UnderlyerNetDeltaMetric<InstrumentData, PositionStage>;
+    using UnderlyerGrossVega = UnderlyerGrossVegaMetric<InstrumentData, PositionStage>;
+    using UnderlyerNetVega = UnderlyerNetVegaMetric<InstrumentData, PositionStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        StaticInstrumentProvider,
+        InstrumentData,
         UnderlyerGrossDelta,
         UnderlyerNetDelta,
         UnderlyerGrossVega,
@@ -146,13 +146,17 @@ protected:
 
     void SetUp() override {
         provider = create_vega_delta_provider();
-        engine.set_instrument_provider(&provider);
 
         // Set global default limits for all underlyers
         engine.set_default_limit<UnderlyerGrossDelta>(MAX_GROSS_DELTA);
         engine.set_default_limit<UnderlyerNetDelta>(MAX_NET_DELTA);
         engine.set_default_limit<UnderlyerGrossVega>(MAX_GROSS_VEGA);
         engine.set_default_limit<UnderlyerNetVega>(MAX_NET_VEGA);
+    }
+
+    // Helper to get instrument from provider
+    InstrumentData get_instrument(const std::string& symbol) const {
+        return provider.get_instrument(symbol);
     }
 
     // Accessors
@@ -197,9 +201,10 @@ TEST_F(VegaDeltaCombinedTest, StockHasZeroVega) {
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 0.0) << "Initial: gross_delta=0";
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 0.0) << "Initial: gross_vega=0";
 
-    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0));
+    auto inst = get_instrument("AAPL");
+    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100), inst);
+    engine.on_execution_report(create_ack("ORD001", 100), inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0), inst);
 
     // Stock contributes to delta but not vega
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 15000.0) << "Stock has delta exposure";
@@ -217,9 +222,10 @@ TEST_F(VegaDeltaCombinedTest, OptionHasDeltaAndVega) {
     // delta_exposure = 10 * 0.5 * 100 * 150 * 1 = 75,000
     // vega_exposure = 10 * 0.25 * 100 * 150 * 1 = 37,500
 
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst);
 
     // Option contributes to both delta and vega
     double expected_delta = expected_delta_exposure("AAPL_C150", 10);  // 75,000
@@ -247,17 +253,19 @@ TEST_F(VegaDeltaCombinedTest, CombinedStockAndOption) {
     //   gross_vega = 0 + 37,500 = 37,500 (only option contributes)
 
     // Stock order - fill it
-    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0));
+    auto stock_inst = get_instrument("AAPL");
+    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 100), stock_inst);
+    engine.on_execution_report(create_ack("ORD001", 100), stock_inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 150.0), stock_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 15000.0);
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 0.0);
 
     // Option order - fill it
-    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD002", 10));
-    engine.on_execution_report(create_fill("ORD002", 10, 0, 5.0));
+    auto option_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), option_inst);
+    engine.on_execution_report(create_ack("ORD002", 10), option_inst);
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 5.0), option_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 90000.0) << "Stock + option delta";
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 37500.0) << "Only option contributes vega";
@@ -276,18 +284,20 @@ TEST_F(VegaDeltaCombinedTest, NetVegaWithMixedSides) {
     // gross_vega = 37,500 + 22,500 = 60,000
     // net_vega = 37,500 - 22,500 = 15,000
 
+    auto inst = get_instrument("AAPL_C150");
+
     // BID order - fill it
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 37500.0);
     EXPECT_DOUBLE_EQ(net_vega("AAPL"), 37500.0);
 
     // ASK order - fill it
-    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 6));
-    engine.on_execution_report(create_ack("ORD002", 6));
-    engine.on_execution_report(create_fill("ORD002", 6, 0, 5.0));
+    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 6), inst);
+    engine.on_execution_report(create_ack("ORD002", 6), inst);
+    engine.on_execution_report(create_fill("ORD002", 6, 0, 5.0), inst);
 
     double ask_vega = expected_vega_exposure("AAPL_C150", 6);  // 22,500
     EXPECT_DOUBLE_EQ(ask_vega, 22500.0);
@@ -304,17 +314,19 @@ TEST_F(VegaDeltaCombinedTest, VegaLimitBreachCheck) {
     // Set a lower gross vega limit for testing
     engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"AAPL"}, 50000.0);
 
+    auto inst = get_instrument("AAPL_C150");
+
     // AAPL_C150 BID qty=10: vega_exposure = 37,500 (under limit) - fill it
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 37500.0);
 
     // Pre-trade check: AAPL_C150 BID qty=5 would add 18,750 vega
     // Total would be 37,500 + 18,750 = 56,250 > 50,000 limit
     auto order = create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 5);
-    auto result = engine.pre_trade_check(order);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach gross vega limit";
     EXPECT_TRUE(result.has_breach(LimitType::GROSS_VEGA));
@@ -334,12 +346,14 @@ TEST_F(VegaDeltaCombinedTest, StockOrderPassesVegaLimit) {
     // Set a very low gross vega limit
     engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"AAPL"}, 1000.0);
 
+    auto inst = get_instrument("AAPL");
+
     // AAPL stock order: qty=1000 (huge position)
     // vega_exposure = 1000 * 0 * 1 * 150 * 1 = 0 (stocks have zero vega)
     // delta_exposure = 1000 * 1 * 1 * 150 * 1 = 150,000
 
     auto order = create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 1000);
-    auto result = engine.pre_trade_check(order);
+    auto result = engine.pre_trade_check(order, inst);
 
     // Stock has zero vega, so it should NOT breach vega limit
     EXPECT_FALSE(result.has_breach(LimitType::GROSS_VEGA))
@@ -347,7 +361,7 @@ TEST_F(VegaDeltaCombinedTest, StockOrderPassesVegaLimit) {
 
     // But it may breach delta limit (if we had set one lower)
     engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"AAPL"}, 100000.0);
-    result = engine.pre_trade_check(order);
+    result = engine.pre_trade_check(order, inst);
     EXPECT_TRUE(result.has_breach(LimitType::GROSS_DELTA))
         << "Stock DOES breach delta limit";
 }
@@ -360,23 +374,25 @@ TEST_F(VegaDeltaCombinedTest, NetVegaLimitWithOpposingPositions) {
     // Set net vega limit
     engine.set_limit<UnderlyerNetVega>(UnderlyerKey{"AAPL"}, 20000.0);
 
+    auto inst = get_instrument("AAPL_C150");
+
     // AAPL_C150 BID qty=10: net_vega = +37,500 (breaches limit)
     auto order1 = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
-    auto result1 = engine.pre_trade_check(order1);
+    auto result1 = engine.pre_trade_check(order1, inst);
     EXPECT_TRUE(result1.has_breach(LimitType::NET_VEGA)) << "BID order alone breaches net vega limit";
 
     // But if we have existing ASK position, the new BID might be OK
     // First establish ASK position: qty=6 -> net_vega = -22,500 - fill it
-    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 6));
-    engine.on_execution_report(create_ack("ORD002", 6));
-    engine.on_execution_report(create_fill("ORD002", 6, 0, 5.0));
+    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 6), inst);
+    engine.on_execution_report(create_ack("ORD002", 6), inst);
+    engine.on_execution_report(create_fill("ORD002", 6, 0, 5.0), inst);
 
     EXPECT_DOUBLE_EQ(net_vega("AAPL"), -22500.0);
 
     // Now check smaller BID order: qty=5 -> +18,750
     // Net would be -22,500 + 18,750 = -3,750 (within limit of 20,000)
     auto order2 = create_order("ORD003", "AAPL_C150", "AAPL", Side::BID, 5.0, 5);
-    auto result2 = engine.pre_trade_check(order2);
+    auto result2 = engine.pre_trade_check(order2, inst);
     EXPECT_FALSE(result2.has_breach(LimitType::NET_VEGA))
         << "Net vega -3750 is within limit of 20000";
 }
@@ -395,9 +411,10 @@ TEST_F(VegaDeltaCombinedTest, PutOptionNegativeDeltaPositiveVega) {
     //   gross_vega = 30,000
     //   net_vega (BID) = +30,000
 
-    engine.on_new_order_single(create_order("ORD001", "AAPL_P150", "AAPL", Side::BID, 3.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 3.0));
+    auto inst = get_instrument("AAPL_P150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_P150", "AAPL", Side::BID, 3.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 3.0), inst);
 
     double expected_delta = expected_delta_exposure("AAPL_P150", 10);  // -60,000
     double expected_vega = expected_vega_exposure("AAPL_P150", 10);    // 30,000
@@ -417,17 +434,19 @@ TEST_F(VegaDeltaCombinedTest, PutOptionNegativeDeltaPositiveVega) {
 
 TEST_F(VegaDeltaCombinedTest, MultipleUnderlyersIndependent) {
     // AAPL option order - fill it
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto aapl_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 10), aapl_inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), aapl_inst);
 
     // MSFT option order - fill it
     // MSFT_C300: delta=0.6, vega=0.30, contract_size=100, underlyer_spot=$300
     // delta_exposure = 10 * 0.6 * 100 * 300 = 180,000
     // vega_exposure = 10 * 0.30 * 100 * 300 = 90,000
-    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 10));
-    engine.on_execution_report(create_ack("ORD002", 10));
-    engine.on_execution_report(create_fill("ORD002", 10, 0, 8.0));
+    auto msft_inst = get_instrument("MSFT_C300");
+    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 10), msft_inst);
+    engine.on_execution_report(create_ack("ORD002", 10), msft_inst);
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 8.0), msft_inst);
 
     // AAPL metrics
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 75000.0);
@@ -447,15 +466,17 @@ TEST_F(VegaDeltaCombinedTest, MultipleUnderlyersIndependent) {
 // ============================================================================
 
 TEST_F(VegaDeltaCombinedTest, PartialAndFullFillsAccumulateInPosition) {
+    auto inst = get_instrument("AAPL_C150");
+
     // Insert order
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), inst);
 
     // Before any fills, position is 0 (we only track position stage)
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 0.0);
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 0.0);
 
     // Ack moves to open (still no position)
-    engine.on_execution_report(create_ack("ORD001", 10));
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 0.0);
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 0.0);
@@ -463,14 +484,14 @@ TEST_F(VegaDeltaCombinedTest, PartialAndFullFillsAccumulateInPosition) {
     // Partial fill: 5 contracts filled
     // Position: 5 * 0.5 * 100 * 150 = 37,500 delta
     // Position: 5 * 0.25 * 100 * 150 = 18,750 vega
-    engine.on_execution_report(create_fill("ORD001", 5, 5, 5.0));
+    engine.on_execution_report(create_fill("ORD001", 5, 5, 5.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 37500.0) << "Partial fill: 5 contracts";
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 18750.0) << "Partial fill: 5 contracts";
 
     // Full fill (remaining 5)
     // Total position: 10 contracts
-    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0));
+    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0), inst);
 
     // Order fully filled, all 10 contracts in position stage
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 75000.0);
@@ -483,12 +504,15 @@ TEST_F(VegaDeltaCombinedTest, PartialAndFullFillsAccumulateInPosition) {
 
 TEST_F(VegaDeltaCombinedTest, ClearResetsAllMetrics) {
     // Create some positions - fill them
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
-    engine.on_new_order_single(create_order("ORD002", "AAPL", "AAPL", Side::BID, 150.0, 100));
-    engine.on_execution_report(create_ack("ORD002", 100));
-    engine.on_execution_report(create_fill("ORD002", 100, 0, 150.0));
+    auto option_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10), option_inst);
+    engine.on_execution_report(create_ack("ORD001", 10), option_inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), option_inst);
+
+    auto stock_inst = get_instrument("AAPL");
+    engine.on_new_order_single(create_order("ORD002", "AAPL", "AAPL", Side::BID, 150.0, 100), stock_inst);
+    engine.on_execution_report(create_ack("ORD002", 100), stock_inst);
+    engine.on_execution_report(create_fill("ORD002", 100, 0, 150.0), stock_inst);
 
     EXPECT_GT(gross_delta("AAPL"), 0.0);
     EXPECT_GT(gross_vega("AAPL"), 0.0);
@@ -510,10 +534,12 @@ TEST_F(VegaDeltaCombinedTest, PreTradeCheckBreachesBothDeltaAndVega) {
     engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"AAPL"}, 10000.0);
     engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"AAPL"}, 5000.0);
 
+    auto inst = get_instrument("AAPL_C150");
+
     // AAPL_C150 BID qty=10: delta=75,000, vega=37,500
     // Both exceed limits
     auto order = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
-    auto result = engine.pre_trade_check(order);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach);
     EXPECT_TRUE(result.has_breach(LimitType::GROSS_DELTA))
@@ -573,9 +599,10 @@ TEST_F(VegaDeltaCombinedTest, HKDOptionWithFxRateConversion) {
 
     constexpr double HKD_TO_USD = 0.128;
 
-    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0));
+    auto inst = get_instrument("0700_C350");
+    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0), inst);
 
     // Verify delta exposure includes fx_rate
     // delta = 10 * 0.55 * 100 * 350 * 0.128 = 24,640
@@ -606,9 +633,10 @@ TEST_F(VegaDeltaCombinedTest, HKDStockWithFxRateConversion) {
 
     constexpr double HKD_TO_USD = 0.128;
 
-    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0));
+    auto inst = get_instrument("0700.HK");
+    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100), inst);
+    engine.on_execution_report(create_ack("ORD001", 100), inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0), inst);
 
     // Verify delta exposure includes fx_rate
     // delta = 100 * 1 * 1 * 350 * 0.128 = 4,480
@@ -637,17 +665,19 @@ TEST_F(VegaDeltaCombinedTest, CombinedHKDStockAndOption) {
     //   gross_vega = 0 + 13,440 = 13,440
 
     // Stock order
-    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100));
-    engine.on_execution_report(create_ack("ORD001", 100));
-    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0));
+    auto stock_inst = get_instrument("0700.HK");
+    engine.on_new_order_single(create_order("ORD001", "0700.HK", "0700.HK", Side::BID, 350.0, 100), stock_inst);
+    engine.on_execution_report(create_ack("ORD001", 100), stock_inst);
+    engine.on_execution_report(create_fill("ORD001", 100, 0, 350.0), stock_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 4480.0);
     EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 0.0);
 
     // Option order
-    engine.on_new_order_single(create_order("ORD002", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
-    engine.on_execution_report(create_ack("ORD002", 10));
-    engine.on_execution_report(create_fill("ORD002", 10, 0, 25.0));
+    auto option_inst = get_instrument("0700_C350");
+    engine.on_new_order_single(create_order("ORD002", "0700_C350", "0700.HK", Side::BID, 25.0, 10), option_inst);
+    engine.on_execution_report(create_ack("ORD002", 10), option_inst);
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 25.0), option_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 29120.0) << "Stock + option delta";
     EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 13440.0) << "Only option contributes vega";
@@ -671,9 +701,10 @@ TEST_F(VegaDeltaCombinedTest, HKDPutOptionNegativeDelta) {
 
     constexpr double HKD_TO_USD = 0.128;
 
-    engine.on_new_order_single(create_order("ORD001", "0700_P350", "0700.HK", Side::BID, 20.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 20.0));
+    auto inst = get_instrument("0700_P350");
+    engine.on_new_order_single(create_order("ORD001", "0700_P350", "0700.HK", Side::BID, 20.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 20.0), inst);
 
     // Verify delta exposure (negative delta put)
     double expected_delta = 10 * (-0.45) * 100 * 350.0 * HKD_TO_USD;
@@ -698,17 +729,19 @@ TEST_F(VegaDeltaCombinedTest, HKDPreTradeCheckWithFxRate) {
     // Set limits in USD (risk limits are always in base currency)
     engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{"0700.HK"}, 15000.0);  // 15,000 USD
 
+    auto inst = get_instrument("0700_C350");
+
     // 0700_C350 BID qty=10: vega_exposure = 13,440 USD (under limit)
-    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0));
+    engine.on_new_order_single(create_order("ORD001", "0700_C350", "0700.HK", Side::BID, 25.0, 10), inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 25.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("0700.HK"), 13440.0);
 
     // Pre-trade check: 0700_C350 BID qty=2 would add 2,688 vega
     // Total would be 13,440 + 2,688 = 16,128 > 15,000 limit
     auto order = create_order("ORD002", "0700_C350", "0700.HK", Side::BID, 25.0, 2);
-    auto result = engine.pre_trade_check(order);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach gross vega limit";
     EXPECT_TRUE(result.has_breach(LimitType::GROSS_VEGA));
@@ -730,13 +763,13 @@ TEST_F(VegaDeltaCombinedTest, HKDPreTradeCheckWithFxRate) {
 
 class VegaDeltaUniformLimitsTest : public ::testing::Test {
 protected:
-    using UnderlyerGrossDelta = UnderlyerGrossDeltaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerNetDelta = UnderlyerNetDeltaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerGrossVega = UnderlyerGrossVegaMetric<StaticInstrumentProvider, PositionStage>;
-    using UnderlyerNetVega = UnderlyerNetVegaMetric<StaticInstrumentProvider, PositionStage>;
+    using UnderlyerGrossDelta = UnderlyerGrossDeltaMetric<InstrumentData, PositionStage>;
+    using UnderlyerNetDelta = UnderlyerNetDeltaMetric<InstrumentData, PositionStage>;
+    using UnderlyerGrossVega = UnderlyerGrossVegaMetric<InstrumentData, PositionStage>;
+    using UnderlyerNetVega = UnderlyerNetVegaMetric<InstrumentData, PositionStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        StaticInstrumentProvider,
+        InstrumentData,
         UnderlyerGrossDelta,
         UnderlyerNetDelta,
         UnderlyerGrossVega,
@@ -754,7 +787,6 @@ protected:
 
     void SetUp() override {
         provider = create_vega_delta_provider();
-        engine.set_instrument_provider(&provider);
 
         // Apply the same limits to all underlyers
         for (const auto& underlyer : {"AAPL", "MSFT", "0700.HK"}) {
@@ -763,6 +795,11 @@ protected:
             engine.set_limit<UnderlyerGrossVega>(UnderlyerKey{underlyer}, UNIFORM_GROSS_VEGA);
             engine.set_limit<UnderlyerNetVega>(UnderlyerKey{underlyer}, UNIFORM_NET_VEGA);
         }
+    }
+
+    // Helper to get instrument from provider
+    InstrumentData get_instrument(const std::string& symbol) const {
+        return provider.get_instrument(symbol);
     }
 
     double gross_delta(const std::string& underlyer) const {
@@ -812,19 +849,22 @@ TEST_F(VegaDeltaUniformLimitsTest, SameOrderSizeDifferentUsageLevels) {
     // 0700_C350: 5 * 0.55 * 100 * 350 * 0.128 = 12,320 delta, 5 * 0.30 * 100 * 350 * 0.128 = 6,720 vega
 
     // AAPL option - fill
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5));
-    engine.on_execution_report(create_ack("ORD001", 5));
-    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0));
+    auto aapl_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5), aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 5), aapl_inst);
+    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0), aapl_inst);
 
     // MSFT option - fill
-    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 5));
-    engine.on_execution_report(create_ack("ORD002", 5));
-    engine.on_execution_report(create_fill("ORD002", 5, 0, 8.0));
+    auto msft_inst = get_instrument("MSFT_C300");
+    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 5), msft_inst);
+    engine.on_execution_report(create_ack("ORD002", 5), msft_inst);
+    engine.on_execution_report(create_fill("ORD002", 5, 0, 8.0), msft_inst);
 
     // 0700.HK option - fill
-    engine.on_new_order_single(create_order("ORD003", "0700_C350", "0700.HK", Side::BID, 25.0, 5));
-    engine.on_execution_report(create_ack("ORD003", 5));
-    engine.on_execution_report(create_fill("ORD003", 5, 0, 25.0));
+    auto hk_inst = get_instrument("0700_C350");
+    engine.on_new_order_single(create_order("ORD003", "0700_C350", "0700.HK", Side::BID, 25.0, 5), hk_inst);
+    engine.on_execution_report(create_ack("ORD003", 5), hk_inst);
+    engine.on_execution_report(create_fill("ORD003", 5, 0, 25.0), hk_inst);
 
     // Verify different exposure levels despite same quantity
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 37500.0) << "AAPL: under 50k limit";
@@ -843,9 +883,10 @@ TEST_F(VegaDeltaUniformLimitsTest, SameOrderSizeDifferentUsageLevels) {
 TEST_F(VegaDeltaUniformLimitsTest, PreTradeChecksEnforceUniformLimitsIndependently) {
     // AAPL at 80% of limit (40,000 / 50,000 gross delta)
     // Need qty to get ~40,000 delta: 40000 / (0.5 * 100 * 150) = 5.33, use qty=5 -> 37,500
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5));
-    engine.on_execution_report(create_ack("ORD001", 5));
-    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0));
+    auto aapl_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5), aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 5), aapl_inst);
+    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0), aapl_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 37500.0);
 
@@ -854,20 +895,21 @@ TEST_F(VegaDeltaUniformLimitsTest, PreTradeChecksEnforceUniformLimitsIndependent
 
     // Pre-trade check for AAPL: qty=2 adds 15,000 delta -> total 52,500 > 50,000
     auto aapl_order = create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 2);
-    auto aapl_result = engine.pre_trade_check(aapl_order);
+    auto aapl_result = engine.pre_trade_check(aapl_order, aapl_inst);
     EXPECT_TRUE(aapl_result.has_breach(LimitType::GROSS_DELTA))
         << "AAPL order should breach gross delta limit";
 
     // Pre-trade check for MSFT: qty=5 adds 90,000 delta -> exceeds 50,000
     // But MSFT is independent of AAPL
+    auto msft_inst = get_instrument("MSFT_C300");
     auto msft_order = create_order("ORD003", "MSFT_C300", "MSFT", Side::BID, 8.0, 5);
-    auto msft_result = engine.pre_trade_check(msft_order);
+    auto msft_result = engine.pre_trade_check(msft_order, msft_inst);
     EXPECT_TRUE(msft_result.has_breach(LimitType::GROSS_DELTA))
         << "MSFT order exceeds limit on its own";
 
     // Pre-trade check for MSFT: qty=1 adds 18,000 delta -> under 50,000
     auto msft_small = create_order("ORD004", "MSFT_C300", "MSFT", Side::BID, 8.0, 1);
-    auto msft_small_result = engine.pre_trade_check(msft_small);
+    auto msft_small_result = engine.pre_trade_check(msft_small, msft_inst);
     EXPECT_FALSE(msft_small_result.has_breach(LimitType::GROSS_DELTA))
         << "MSFT small order should pass - underlyers are independent";
 }
@@ -879,27 +921,29 @@ TEST_F(VegaDeltaUniformLimitsTest, PreTradeChecksEnforceUniformLimitsIndependent
 TEST_F(VegaDeltaUniformLimitsTest, BreachOnOneDoesNotAffectOthers) {
     // Fill AAPL to just under the gross delta limit
     // qty=6 -> 6 * 0.5 * 100 * 150 = 45,000 (under 50,000)
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 6));
-    engine.on_execution_report(create_ack("ORD001", 6));
-    engine.on_execution_report(create_fill("ORD001", 6, 0, 5.0));
+    auto aapl_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 6), aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 6), aapl_inst);
+    engine.on_execution_report(create_fill("ORD001", 6, 0, 5.0), aapl_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 45000.0);
 
     // AAPL is near limit - another order would breach
     auto aapl_breach = create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 2);
-    EXPECT_TRUE(engine.pre_trade_check(aapl_breach).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_TRUE(engine.pre_trade_check(aapl_breach, aapl_inst).has_breach(LimitType::GROSS_DELTA));
 
     // But 0700.HK should still accept orders freely
     // qty=10 -> 10 * 0.55 * 100 * 350 * 0.128 = 24,640 (under 50,000)
+    auto hk_inst = get_instrument("0700_C350");
     auto hk_order = create_order("ORD003", "0700_C350", "0700.HK", Side::BID, 25.0, 10);
-    auto hk_result = engine.pre_trade_check(hk_order);
+    auto hk_result = engine.pre_trade_check(hk_order, hk_inst);
     EXPECT_FALSE(hk_result.has_breach(LimitType::GROSS_DELTA))
         << "0700.HK should pass - AAPL breach doesn't affect it";
 
     // Execute the HK order
-    engine.on_new_order_single(hk_order);
-    engine.on_execution_report(create_ack("ORD003", 10));
-    engine.on_execution_report(create_fill("ORD003", 10, 0, 25.0));
+    engine.on_new_order_single(hk_order, hk_inst);
+    engine.on_execution_report(create_ack("ORD003", 10), hk_inst);
+    engine.on_execution_report(create_fill("ORD003", 10, 0, 25.0), hk_inst);
 
     EXPECT_DOUBLE_EQ(gross_delta("0700.HK"), 24640.0);
 
@@ -915,21 +959,24 @@ TEST_F(VegaDeltaUniformLimitsTest, MultipleUnderlyersNearLimitSimultaneously) {
     // Fill all three underlyers to near their gross delta limits
 
     // AAPL: qty=6 -> 45,000 delta (90% of 50,000)
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 6));
-    engine.on_execution_report(create_ack("ORD001", 6));
-    engine.on_execution_report(create_fill("ORD001", 6, 0, 5.0));
+    auto aapl_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 6), aapl_inst);
+    engine.on_execution_report(create_ack("ORD001", 6), aapl_inst);
+    engine.on_execution_report(create_fill("ORD001", 6, 0, 5.0), aapl_inst);
 
     // MSFT: qty=2 -> 36,000 delta (72% of 50,000)
     // 2 * 0.6 * 100 * 300 = 36,000
-    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 2));
-    engine.on_execution_report(create_ack("ORD002", 2));
-    engine.on_execution_report(create_fill("ORD002", 2, 0, 8.0));
+    auto msft_inst = get_instrument("MSFT_C300");
+    engine.on_new_order_single(create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 2), msft_inst);
+    engine.on_execution_report(create_ack("ORD002", 2), msft_inst);
+    engine.on_execution_report(create_fill("ORD002", 2, 0, 8.0), msft_inst);
 
     // 0700.HK: qty=15 -> 36,960 delta (74% of 50,000)
     // 15 * 0.55 * 100 * 350 * 0.128 = 36,960
-    engine.on_new_order_single(create_order("ORD003", "0700_C350", "0700.HK", Side::BID, 25.0, 15));
-    engine.on_execution_report(create_ack("ORD003", 15));
-    engine.on_execution_report(create_fill("ORD003", 15, 0, 25.0));
+    auto hk_inst = get_instrument("0700_C350");
+    engine.on_new_order_single(create_order("ORD003", "0700_C350", "0700.HK", Side::BID, 25.0, 15), hk_inst);
+    engine.on_execution_report(create_ack("ORD003", 15), hk_inst);
+    engine.on_execution_report(create_fill("ORD003", 15, 0, 25.0), hk_inst);
 
     // Verify all underlyers are near but under limit
     EXPECT_DOUBLE_EQ(gross_delta("AAPL"), 45000.0);
@@ -939,17 +986,17 @@ TEST_F(VegaDeltaUniformLimitsTest, MultipleUnderlyersNearLimitSimultaneously) {
     // Check if additional orders can fit
     // AAPL at 45,000, adding 1 contract = 7,500 -> 52,500 > 50,000 limit
     auto aapl_small = create_order("ORD004", "AAPL_C150", "AAPL", Side::BID, 5.0, 1);
-    EXPECT_TRUE(engine.pre_trade_check(aapl_small).has_breach(LimitType::GROSS_DELTA))
+    EXPECT_TRUE(engine.pre_trade_check(aapl_small, aapl_inst).has_breach(LimitType::GROSS_DELTA))
         << "AAPL: +7,500 -> 52,500 > 50,000 limit";
 
     // MSFT at 36,000, adding 1 contract = 18,000 -> 54,000 > 50,000 limit
     auto msft_small = create_order("ORD005", "MSFT_C300", "MSFT", Side::BID, 8.0, 1);
-    EXPECT_TRUE(engine.pre_trade_check(msft_small).has_breach(LimitType::GROSS_DELTA))
+    EXPECT_TRUE(engine.pre_trade_check(msft_small, msft_inst).has_breach(LimitType::GROSS_DELTA))
         << "MSFT: +18,000 -> 54,000 > 50,000 limit";
 
     // 0700.HK at 36,960, adding 1 contract = 2,464 -> 39,424 < 50,000 limit (fits!)
     auto hk_small = create_order("ORD006", "0700_C350", "0700.HK", Side::BID, 25.0, 1);
-    EXPECT_FALSE(engine.pre_trade_check(hk_small).has_breach(LimitType::GROSS_DELTA))
+    EXPECT_FALSE(engine.pre_trade_check(hk_small, hk_inst).has_breach(LimitType::GROSS_DELTA))
         << "0700.HK: +2,464 -> 39,424 < 50,000 limit";
 }
 
@@ -962,43 +1009,47 @@ TEST_F(VegaDeltaUniformLimitsTest, UniformVegaLimitsWithMixedInstruments) {
     // Uniform gross vega limit = 25,000
 
     // AAPL stock: any quantity, vega = 0
-    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 1000));
-    engine.on_execution_report(create_ack("ORD001", 1000));
-    engine.on_execution_report(create_fill("ORD001", 1000, 0, 150.0));
+    auto aapl_stock_inst = get_instrument("AAPL");
+    engine.on_new_order_single(create_order("ORD001", "AAPL", "AAPL", Side::BID, 150.0, 1000), aapl_stock_inst);
+    engine.on_execution_report(create_ack("ORD001", 1000), aapl_stock_inst);
+    engine.on_execution_report(create_fill("ORD001", 1000, 0, 150.0), aapl_stock_inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 0.0) << "Stock has zero vega";
 
     // AAPL option: qty=5 -> 18,750 vega (75% of 25,000 limit)
-    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 5));
-    engine.on_execution_report(create_ack("ORD002", 5));
-    engine.on_execution_report(create_fill("ORD002", 5, 0, 5.0));
+    auto aapl_option_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD002", "AAPL_C150", "AAPL", Side::BID, 5.0, 5), aapl_option_inst);
+    engine.on_execution_report(create_ack("ORD002", 5), aapl_option_inst);
+    engine.on_execution_report(create_fill("ORD002", 5, 0, 5.0), aapl_option_inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("AAPL"), 18750.0);
 
     // MSFT stock + option mixed
-    engine.on_new_order_single(create_order("ORD003", "MSFT", "MSFT", Side::BID, 300.0, 500));
-    engine.on_execution_report(create_ack("ORD003", 500));
-    engine.on_execution_report(create_fill("ORD003", 500, 0, 300.0));
+    auto msft_stock_inst = get_instrument("MSFT");
+    engine.on_new_order_single(create_order("ORD003", "MSFT", "MSFT", Side::BID, 300.0, 500), msft_stock_inst);
+    engine.on_execution_report(create_ack("ORD003", 500), msft_stock_inst);
+    engine.on_execution_report(create_fill("ORD003", 500, 0, 300.0), msft_stock_inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("MSFT"), 0.0) << "MSFT stock has zero vega";
 
     // MSFT option: qty=2 -> 18,000 vega
     // 2 * 0.30 * 100 * 300 = 18,000
-    engine.on_new_order_single(create_order("ORD004", "MSFT_C300", "MSFT", Side::BID, 8.0, 2));
-    engine.on_execution_report(create_ack("ORD004", 2));
-    engine.on_execution_report(create_fill("ORD004", 2, 0, 8.0));
+    auto msft_option_inst = get_instrument("MSFT_C300");
+    engine.on_new_order_single(create_order("ORD004", "MSFT_C300", "MSFT", Side::BID, 8.0, 2), msft_option_inst);
+    engine.on_execution_report(create_ack("ORD004", 2), msft_option_inst);
+    engine.on_execution_report(create_fill("ORD004", 2, 0, 8.0), msft_option_inst);
 
     EXPECT_DOUBLE_EQ(gross_vega("MSFT"), 18000.0);
 
     // Pre-trade: can add more stock without affecting vega limit
     auto msft_stock = create_order("ORD005", "MSFT", "MSFT", Side::BID, 300.0, 10000);
-    EXPECT_FALSE(engine.pre_trade_check(msft_stock).has_breach(LimitType::GROSS_VEGA))
+    EXPECT_FALSE(engine.pre_trade_check(msft_stock, msft_stock_inst).has_breach(LimitType::GROSS_VEGA))
         << "Stock order doesn't breach vega limit";
 
     // But adding option would breach
     // MSFT vega at 18,000, adding qty=1 -> +9,000 -> 27,000 > 25,000
     auto msft_option = create_order("ORD006", "MSFT_C300", "MSFT", Side::BID, 8.0, 1);
-    EXPECT_TRUE(engine.pre_trade_check(msft_option).has_breach(LimitType::GROSS_VEGA))
+    EXPECT_TRUE(engine.pre_trade_check(msft_option, msft_option_inst).has_breach(LimitType::GROSS_VEGA))
         << "Option order breaches vega limit";
 }
 
@@ -1015,18 +1066,20 @@ TEST_F(VegaDeltaUniformLimitsTest, NetLimitsWithUniformThresholds) {
     // AAPL_P150 BID qty=5: delta = 5 * (-0.4) * 100 * 150 = -30,000
     // Net delta = 37,500 - 30,000 = 7,500 (within 30,000 limit)
 
-    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5));
-    engine.on_execution_report(create_ack("ORD001", 5));
-    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0));
+    auto call_inst = get_instrument("AAPL_C150");
+    engine.on_new_order_single(create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 5), call_inst);
+    engine.on_execution_report(create_ack("ORD001", 5), call_inst);
+    engine.on_execution_report(create_fill("ORD001", 5, 0, 5.0), call_inst);
 
     EXPECT_DOUBLE_EQ(net_delta("AAPL"), 37500.0);
     // This exceeds net limit of 30,000 on its own
     EXPECT_GT(std::abs(net_delta("AAPL")), UNIFORM_NET_DELTA);
 
     // Add offsetting put position
-    engine.on_new_order_single(create_order("ORD002", "AAPL_P150", "AAPL", Side::BID, 3.0, 5));
-    engine.on_execution_report(create_ack("ORD002", 5));
-    engine.on_execution_report(create_fill("ORD002", 5, 0, 3.0));
+    auto put_inst = get_instrument("AAPL_P150");
+    engine.on_new_order_single(create_order("ORD002", "AAPL_P150", "AAPL", Side::BID, 3.0, 5), put_inst);
+    engine.on_execution_report(create_ack("ORD002", 5), put_inst);
+    engine.on_execution_report(create_fill("ORD002", 5, 0, 3.0), put_inst);
 
     // Put delta = 5 * (-0.4) * 100 * 150 = -30,000
     // Net = 37,500 + (-30,000) = 7,500
@@ -1050,30 +1103,33 @@ TEST_F(VegaDeltaUniformLimitsTest, VerifyUniformLimitValuesApplied) {
 
     // AAPL: 1 contract = 7,500 delta, need ~6.67 contracts to hit 50,000
     // qty=6 -> 45,000 (under), qty=7 -> 52,500 (over)
+    auto aapl_inst = get_instrument("AAPL_C150");
     auto aapl_under = create_order("A1", "AAPL_C150", "AAPL", Side::BID, 5.0, 6);
     auto aapl_over = create_order("A2", "AAPL_C150", "AAPL", Side::BID, 5.0, 7);
-    EXPECT_FALSE(engine.pre_trade_check(aapl_under).has_breach(LimitType::GROSS_DELTA));
-    EXPECT_TRUE(engine.pre_trade_check(aapl_over).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_FALSE(engine.pre_trade_check(aapl_under, aapl_inst).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_TRUE(engine.pre_trade_check(aapl_over, aapl_inst).has_breach(LimitType::GROSS_DELTA));
 
     // MSFT: 1 contract = 18,000 delta, need ~2.78 contracts to hit 50,000
     // qty=2 -> 36,000 (under), qty=3 -> 54,000 (over)
+    auto msft_inst = get_instrument("MSFT_C300");
     auto msft_under = create_order("M1", "MSFT_C300", "MSFT", Side::BID, 8.0, 2);
     auto msft_over = create_order("M2", "MSFT_C300", "MSFT", Side::BID, 8.0, 3);
-    EXPECT_FALSE(engine.pre_trade_check(msft_under).has_breach(LimitType::GROSS_DELTA));
-    EXPECT_TRUE(engine.pre_trade_check(msft_over).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_FALSE(engine.pre_trade_check(msft_under, msft_inst).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_TRUE(engine.pre_trade_check(msft_over, msft_inst).has_breach(LimitType::GROSS_DELTA));
 
     // 0700.HK: 1 contract = 2,464 delta, need ~20.3 contracts to hit 50,000
     // qty=20 -> 49,280 (under), qty=21 -> 51,744 (over)
+    auto hk_inst = get_instrument("0700_C350");
     auto hk_under = create_order("H1", "0700_C350", "0700.HK", Side::BID, 25.0, 20);
     auto hk_over = create_order("H2", "0700_C350", "0700.HK", Side::BID, 25.0, 21);
-    EXPECT_FALSE(engine.pre_trade_check(hk_under).has_breach(LimitType::GROSS_DELTA));
-    EXPECT_TRUE(engine.pre_trade_check(hk_over).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_FALSE(engine.pre_trade_check(hk_under, hk_inst).has_breach(LimitType::GROSS_DELTA));
+    EXPECT_TRUE(engine.pre_trade_check(hk_over, hk_inst).has_breach(LimitType::GROSS_DELTA));
 
     // Verify breach details show same limit value for all
     // Store results to avoid use-after-free on temporary objects
-    auto aapl_result = engine.pre_trade_check(aapl_over);
-    auto msft_result = engine.pre_trade_check(msft_over);
-    auto hk_result = engine.pre_trade_check(hk_over);
+    auto aapl_result = engine.pre_trade_check(aapl_over, aapl_inst);
+    auto msft_result = engine.pre_trade_check(msft_over, msft_inst);
+    auto hk_result = engine.pre_trade_check(hk_over, hk_inst);
 
     const auto* aapl_breach = aapl_result.get_breach(LimitType::GROSS_DELTA);
     const auto* msft_breach = msft_result.get_breach(LimitType::GROSS_DELTA);
@@ -1106,8 +1162,9 @@ TEST_F(VegaDeltaUniformLimitsTest, PerUnderlyerLimitOverrideTakesPriority) {
 
     // AAPL keeps uniform limit of 50,000
     // Test: qty=7 -> 52,500 delta, should breach 50,000 limit
+    auto aapl_inst = get_instrument("AAPL_C150");
     auto aapl_order = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 7);
-    auto aapl_result = engine.pre_trade_check(aapl_order);
+    auto aapl_result = engine.pre_trade_check(aapl_order, aapl_inst);
     EXPECT_TRUE(aapl_result.has_breach(LimitType::GROSS_DELTA))
         << "AAPL should breach uniform 50,000 limit";
     const auto* aapl_breach = aapl_result.get_breach(LimitType::GROSS_DELTA);
@@ -1117,14 +1174,15 @@ TEST_F(VegaDeltaUniformLimitsTest, PerUnderlyerLimitOverrideTakesPriority) {
 
     // MSFT has custom higher limit of 100,000
     // Test: qty=5 -> 90,000 delta, should pass (under 100,000)
+    auto msft_inst = get_instrument("MSFT_C300");
     auto msft_order = create_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 5);
-    auto msft_result = engine.pre_trade_check(msft_order);
+    auto msft_result = engine.pre_trade_check(msft_order, msft_inst);
     EXPECT_FALSE(msft_result.has_breach(LimitType::GROSS_DELTA))
         << "MSFT 90,000 should pass custom 100,000 limit";
 
     // MSFT: qty=6 -> 108,000 delta, should breach custom 100,000 limit
     auto msft_over = create_order("ORD003", "MSFT_C300", "MSFT", Side::BID, 8.0, 6);
-    auto msft_over_result = engine.pre_trade_check(msft_over);
+    auto msft_over_result = engine.pre_trade_check(msft_over, msft_inst);
     EXPECT_TRUE(msft_over_result.has_breach(LimitType::GROSS_DELTA))
         << "MSFT 108,000 should breach custom 100,000 limit";
     const auto* msft_breach = msft_over_result.get_breach(LimitType::GROSS_DELTA);
@@ -1135,15 +1193,16 @@ TEST_F(VegaDeltaUniformLimitsTest, PerUnderlyerLimitOverrideTakesPriority) {
     // 0700.HK has custom lower limit of 20,000
     // Test: qty=8 -> 19,712 delta, should pass (under 20,000)
     // 8 * 0.55 * 100 * 350 * 0.128 = 19,712
+    auto hk_inst = get_instrument("0700_C350");
     auto hk_order = create_order("ORD004", "0700_C350", "0700.HK", Side::BID, 25.0, 8);
-    auto hk_result = engine.pre_trade_check(hk_order);
+    auto hk_result = engine.pre_trade_check(hk_order, hk_inst);
     EXPECT_FALSE(hk_result.has_breach(LimitType::GROSS_DELTA))
         << "0700.HK 19,712 should pass custom 20,000 limit";
 
     // 0700.HK: qty=9 -> 22,176 delta, should breach custom 20,000 limit
     // 9 * 0.55 * 100 * 350 * 0.128 = 22,176
     auto hk_over = create_order("ORD005", "0700_C350", "0700.HK", Side::BID, 25.0, 9);
-    auto hk_over_result = engine.pre_trade_check(hk_over);
+    auto hk_over_result = engine.pre_trade_check(hk_over, hk_inst);
     EXPECT_TRUE(hk_over_result.has_breach(LimitType::GROSS_DELTA))
         << "0700.HK 22,176 should breach custom 20,000 limit";
     const auto* hk_breach = hk_over_result.get_breach(LimitType::GROSS_DELTA);
@@ -1166,9 +1225,11 @@ TEST_F(VegaDeltaUniformLimitsTest, LimitOverrideAppliesToAllMetricTypesIndepende
     constexpr double AAPL_CUSTOM_GROSS_DELTA = 80000.0;
     engine.set_limit<UnderlyerGrossDelta>(UnderlyerKey{"AAPL"}, AAPL_CUSTOM_GROSS_DELTA);
 
+    auto inst = get_instrument("AAPL_C150");
+
     // AAPL_C150 qty=10: delta=75,000, vega=37,500
     auto order = create_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
-    auto result = engine.pre_trade_check(order);
+    auto result = engine.pre_trade_check(order, inst);
 
     // Gross delta: 75,000 < 80,000 custom limit -> PASS
     EXPECT_FALSE(result.has_breach(LimitType::GROSS_DELTA))

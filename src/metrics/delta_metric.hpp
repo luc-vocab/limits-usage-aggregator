@@ -24,17 +24,17 @@ namespace metrics {
 //
 // Template parameters:
 //   Key: The grouping key type (GlobalKey, UnderlyerKey, etc.)
-//   Provider: Must satisfy the option provider requirements (delta support)
+//   Instrument: Must satisfy the option instrument requirements (delta support)
 //   Stages...: Stage types to track (PositionStage, OpenStage, InFlightStage, or AllStages)
 //
 // For GlobalKey: tracks total system-wide delta
 // For UnderlyerKey: tracks delta per underlyer
 //
 
-template<typename Key, typename Provider, typename... Stages>
+template<typename Key, typename Instrument, typename... Stages>
 class DeltaMetric {
-    static_assert(instrument::is_option_provider_v<Provider>,
-                  "Provider must satisfy option provider requirements (underlyer, delta support)");
+    static_assert(instrument::is_option_instrument_v<Instrument>,
+                  "Instrument must satisfy option instrument requirements (underlyer, delta support)");
 
 private:
     struct StageData {
@@ -47,25 +47,18 @@ private:
 
     using Storage = aggregation::StagedMetric<StageData, Stages...>;
 
-    const Provider* provider_ = nullptr;
     Storage storage_;
 
     // Compute delta value for an order (bid = positive, ask = negative)
-    aggregation::DeltaValue compute_delta_value(const engine::TrackedOrder& order) const {
-        if (!provider_) {
-            return aggregation::DeltaValue{0.0, 0.0};
-        }
-        double delta_exp = instrument::compute_delta_exposure(*provider_, order.symbol, order.leaves_qty);
+    aggregation::DeltaValue compute_delta_value(const engine::TrackedOrder& order, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, order.leaves_qty);
         double gross = std::abs(delta_exp);
         double net = (order.side == fix::Side::BID) ? delta_exp : -delta_exp;
         return aggregation::DeltaValue{gross, net};
     }
 
-    aggregation::DeltaValue compute_delta_value(const std::string& symbol, int64_t quantity, fix::Side side) const {
-        if (!provider_) {
-            return aggregation::DeltaValue{0.0, 0.0};
-        }
-        double delta_exp = instrument::compute_delta_exposure(*provider_, symbol, quantity);
+    aggregation::DeltaValue compute_delta_value(int64_t quantity, fix::Side side, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, quantity);
         double gross = std::abs(delta_exp);
         double net = (side == fix::Side::BID) ? delta_exp : -delta_exp;
         return aggregation::DeltaValue{gross, net};
@@ -76,15 +69,10 @@ private:
     }
 
 public:
+    using key_type = Key;
+    using instrument_type = Instrument;
+
     DeltaMetric() = default;
-
-    void set_instrument_provider(const Provider* provider) {
-        provider_ = provider;
-    }
-
-    const Provider* instrument_provider() const {
-        return provider_;
-    }
 
     // ========================================================================
     // Accessors
@@ -131,20 +119,20 @@ public:
     // Generic metric interface (used by GenericRiskAggregationEngine)
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto delta_val = compute_delta_value(order);
+        auto delta_val = compute_delta_value(order, instrument);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->delta.add(key, delta_val);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto delta_val = compute_delta_value(order);
+        auto delta_val = compute_delta_value(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -152,11 +140,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto old_delta = compute_delta_value(order.symbol, old_qty, order.side);
-        auto new_delta = compute_delta_value(order);
+        auto old_delta = compute_delta_value(old_qty, order.side, instrument);
+        auto new_delta = compute_delta_value(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -164,10 +152,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto filled_delta = compute_delta_value(order.symbol, filled_qty, order.side);
+        auto filled_delta = compute_delta_value(filled_qty, order.side, instrument);
 
         // Remove from open stage
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
@@ -182,10 +170,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto filled_delta = compute_delta_value(order.symbol, filled_qty, order.side);
+        auto filled_delta = compute_delta_value(filled_qty, order.side, instrument);
 
         // Credit position stage with filled quantity
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
@@ -195,6 +183,7 @@ public:
     }
 
     void on_state_change(const engine::TrackedOrder& order,
+                         const Instrument& instrument,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -203,7 +192,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_key(order);
-            auto delta_val = compute_delta_value(order);
+            auto delta_val = compute_delta_value(order, instrument);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -218,13 +207,14 @@ public:
     }
 
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             const Instrument& instrument,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_key(order);
-        auto old_delta = compute_delta_value(order.symbol, old_qty, order.side);
-        auto new_delta = compute_delta_value(order);
+        auto old_delta = compute_delta_value(old_qty, order.side, instrument);
+        auto new_delta = compute_delta_value(order, instrument);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -250,12 +240,12 @@ public:
 // ============================================================================
 
 // Global delta metric - tracks total system-wide delta
-template<typename Provider, typename... Stages>
-using GlobalDeltaMetric = DeltaMetric<aggregation::GlobalKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using GlobalDeltaMetric = DeltaMetric<aggregation::GlobalKey, Instrument, Stages...>;
 
 // Per-underlyer delta metric
-template<typename Provider, typename... Stages>
-using UnderlyerDeltaMetric = DeltaMetric<aggregation::UnderlyerKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using UnderlyerDeltaMetric = DeltaMetric<aggregation::UnderlyerKey, Instrument, Stages...>;
 
 // ============================================================================
 // GrossDeltaMetric - Single-value metric tracking absolute delta exposure
@@ -265,15 +255,15 @@ using UnderlyerDeltaMetric = DeltaMetric<aggregation::UnderlyerKey, Provider, St
 // generic limit checking system where each metric has one value type.
 //
 
-template<typename Key, typename Provider, typename... Stages>
+template<typename Key, typename Instrument, typename... Stages>
 class GrossDeltaMetric {
-    static_assert(instrument::is_option_provider_v<Provider>,
-                  "Provider must satisfy option provider requirements (underlyer, delta support)");
+    static_assert(instrument::is_option_instrument_v<Instrument>,
+                  "Instrument must satisfy option instrument requirements (underlyer, delta support)");
 
 public:
     using key_type = Key;
     using value_type = double;
-    using provider_type = Provider;
+    using instrument_type = Instrument;
     using Config = aggregation::StageConfig<Stages...>;
 
     // ========================================================================
@@ -281,24 +271,20 @@ public:
     // ========================================================================
 
     // Compute the gross delta contribution for a new order
-    static double compute_order_contribution(
-        const fix::NewOrderSingle& order,
-        const Provider* provider) {
-        if (!provider) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider, order.symbol, order.quantity);
+    template<typename Inst>
+    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument) {
+        double delta_exp = instrument::compute_delta_exposure(instrument, order.quantity);
         return std::abs(delta_exp);
     }
 
     // Compute the gross delta contribution for an order update (new - old)
+    template<typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Provider* provider) {
-        if (!provider) return 0.0;
-        double old_delta = std::abs(instrument::compute_delta_exposure(
-            *provider, existing_order.symbol, existing_order.leaves_qty));
-        double new_delta = std::abs(instrument::compute_delta_exposure(
-            *provider, update.symbol, update.quantity));
+        const Inst& instrument) {
+        double old_delta = std::abs(instrument::compute_delta_exposure(instrument, existing_order.leaves_qty));
+        double new_delta = std::abs(instrument::compute_delta_exposure(instrument, update.quantity));
         return new_delta - old_delta;
     }
 
@@ -335,18 +321,15 @@ private:
 
     using Storage = aggregation::StagedMetric<StageData, Stages...>;
 
-    const Provider* provider_ = nullptr;
     Storage storage_;
 
-    double compute_gross(const engine::TrackedOrder& order) const {
-        if (!provider_) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider_, order.symbol, order.leaves_qty);
+    double compute_gross(const engine::TrackedOrder& order, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, order.leaves_qty);
         return std::abs(delta_exp);
     }
 
-    double compute_gross(const std::string& symbol, int64_t quantity) const {
-        if (!provider_) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider_, symbol, quantity);
+    double compute_gross(int64_t quantity, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, quantity);
         return std::abs(delta_exp);
     }
 
@@ -356,14 +339,6 @@ private:
 
 public:
     GrossDeltaMetric() = default;
-
-    void set_instrument_provider(const Provider* provider) {
-        provider_ = provider;
-    }
-
-    const Provider* instrument_provider() const {
-        return provider_;
-    }
 
     // ========================================================================
     // Accessors
@@ -399,20 +374,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(order);
+        double gross = compute_gross(order, instrument);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->gross_delta.add(key, gross);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(order);
+        double gross = compute_gross(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -420,11 +395,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(order.symbol, old_qty);
-        double new_gross = compute_gross(order);
+        double old_gross = compute_gross(old_qty, instrument);
+        double new_gross = compute_gross(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -433,10 +408,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(order.symbol, filled_qty);
+        double filled_gross = compute_gross(filled_qty, instrument);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -449,10 +424,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(order.symbol, filled_qty);
+        double filled_gross = compute_gross(filled_qty, instrument);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -461,6 +436,7 @@ public:
     }
 
     void on_state_change(const engine::TrackedOrder& order,
+                         const Instrument& instrument,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -469,7 +445,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double gross = compute_gross(order);
+            double gross = compute_gross(order, instrument);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -484,13 +460,14 @@ public:
     }
 
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             const Instrument& instrument,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_gross = compute_gross(order.symbol, old_qty);
-        double new_gross = compute_gross(order);
+        double old_gross = compute_gross(old_qty, instrument);
+        double new_gross = compute_gross(order, instrument);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -519,15 +496,15 @@ public:
 // generic limit checking system where each metric has one value type.
 //
 
-template<typename Key, typename Provider, typename... Stages>
+template<typename Key, typename Instrument, typename... Stages>
 class NetDeltaMetric {
-    static_assert(instrument::is_option_provider_v<Provider>,
-                  "Provider must satisfy option provider requirements (underlyer, delta support)");
+    static_assert(instrument::is_option_instrument_v<Instrument>,
+                  "Instrument must satisfy option instrument requirements (underlyer, delta support)");
 
 public:
     using key_type = Key;
     using value_type = double;
-    using provider_type = Provider;
+    using instrument_type = Instrument;
     using Config = aggregation::StageConfig<Stages...>;
 
     // ========================================================================
@@ -535,26 +512,22 @@ public:
     // ========================================================================
 
     // Compute the net delta contribution for a new order
-    static double compute_order_contribution(
-        const fix::NewOrderSingle& order,
-        const Provider* provider) {
-        if (!provider) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider, order.symbol, order.quantity);
+    template<typename Inst>
+    static double compute_order_contribution(const fix::NewOrderSingle& order, const Inst& instrument) {
+        double delta_exp = instrument::compute_delta_exposure(instrument, order.quantity);
         return (order.side == fix::Side::BID) ? delta_exp : -delta_exp;
     }
 
     // Compute the net delta contribution for an order update (new - old)
+    template<typename Inst>
     static double compute_update_contribution(
         const fix::OrderCancelReplaceRequest& update,
         const engine::TrackedOrder& existing_order,
-        const Provider* provider) {
-        if (!provider) return 0.0;
-        double old_delta = instrument::compute_delta_exposure(
-            *provider, existing_order.symbol, existing_order.leaves_qty);
+        const Inst& instrument) {
+        double old_delta = instrument::compute_delta_exposure(instrument, existing_order.leaves_qty);
         double old_net = (existing_order.side == fix::Side::BID) ? old_delta : -old_delta;
 
-        double new_delta = instrument::compute_delta_exposure(
-            *provider, update.symbol, update.quantity);
+        double new_delta = instrument::compute_delta_exposure(instrument, update.quantity);
         double new_net = (update.side == fix::Side::BID) ? new_delta : -new_delta;
 
         return new_net - old_net;
@@ -593,18 +566,15 @@ private:
 
     using Storage = aggregation::StagedMetric<StageData, Stages...>;
 
-    const Provider* provider_ = nullptr;
     Storage storage_;
 
-    double compute_net(const engine::TrackedOrder& order) const {
-        if (!provider_) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider_, order.symbol, order.leaves_qty);
+    double compute_net(const engine::TrackedOrder& order, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, order.leaves_qty);
         return (order.side == fix::Side::BID) ? delta_exp : -delta_exp;
     }
 
-    double compute_net(const std::string& symbol, int64_t quantity, fix::Side side) const {
-        if (!provider_) return 0.0;
-        double delta_exp = instrument::compute_delta_exposure(*provider_, symbol, quantity);
+    double compute_net(int64_t quantity, fix::Side side, const Instrument& inst) const {
+        double delta_exp = instrument::compute_delta_exposure(inst, quantity);
         return (side == fix::Side::BID) ? delta_exp : -delta_exp;
     }
 
@@ -614,14 +584,6 @@ private:
 
 public:
     NetDeltaMetric() = default;
-
-    void set_instrument_provider(const Provider* provider) {
-        provider_ = provider;
-    }
-
-    const Provider* instrument_provider() const {
-        return provider_;
-    }
 
     // ========================================================================
     // Accessors
@@ -657,20 +619,20 @@ public:
     // Generic metric interface
     // ========================================================================
 
-    void on_order_added(const engine::TrackedOrder& order) {
+    void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(order);
+        double net = compute_net(order, instrument);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
             stage_data->net_delta.add(key, net);
         }
     }
 
-    void on_order_removed(const engine::TrackedOrder& order) {
+    void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(order);
+        double net = compute_net(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -678,11 +640,11 @@ public:
         }
     }
 
-    void on_order_updated(const engine::TrackedOrder& order, int64_t old_qty) {
+    void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(order.symbol, old_qty, order.side);
-        double new_net = compute_net(order);
+        double old_net = compute_net(old_qty, order.side, instrument);
+        double new_net = compute_net(order, instrument);
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
         if (stage_data) {
@@ -691,10 +653,10 @@ public:
         }
     }
 
-    void on_partial_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(order.symbol, filled_qty, order.side);
+        double filled_net = compute_net(filled_qty, order.side, instrument);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
@@ -707,10 +669,10 @@ public:
         }
     }
 
-    void on_full_fill(const engine::TrackedOrder& order, int64_t filled_qty) {
+    void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(order.symbol, filled_qty, order.side);
+        double filled_net = compute_net(filled_qty, order.side, instrument);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
@@ -719,6 +681,7 @@ public:
     }
 
     void on_state_change(const engine::TrackedOrder& order,
+                         const Instrument& instrument,
                          engine::OrderState old_state,
                          engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
@@ -727,7 +690,7 @@ public:
 
         if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
             Key key = extract_order_key(order);
-            double net = compute_net(order);
+            double net = compute_net(order, instrument);
 
             auto* old_data = storage_.get_stage(old_stage);
             auto* new_data = storage_.get_stage(new_stage);
@@ -742,13 +705,14 @@ public:
     }
 
     void on_order_updated_with_state_change(const engine::TrackedOrder& order,
+                                             const Instrument& instrument,
                                              int64_t old_qty,
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double old_net = compute_net(order.symbol, old_qty, order.side);
-        double new_net = compute_net(order);
+        double old_net = compute_net(old_qty, order.side, instrument);
+        double new_net = compute_net(order, instrument);
 
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
@@ -773,17 +737,17 @@ public:
 // Type aliases for Gross/Net delta metrics
 // ============================================================================
 
-template<typename Provider, typename... Stages>
-using GlobalGrossDeltaMetric = GrossDeltaMetric<aggregation::GlobalKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using GlobalGrossDeltaMetric = GrossDeltaMetric<aggregation::GlobalKey, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using UnderlyerGrossDeltaMetric = GrossDeltaMetric<aggregation::UnderlyerKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using UnderlyerGrossDeltaMetric = GrossDeltaMetric<aggregation::UnderlyerKey, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using GlobalNetDeltaMetric = NetDeltaMetric<aggregation::GlobalKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using GlobalNetDeltaMetric = NetDeltaMetric<aggregation::GlobalKey, Instrument, Stages...>;
 
-template<typename Provider, typename... Stages>
-using UnderlyerNetDeltaMetric = NetDeltaMetric<aggregation::UnderlyerKey, Provider, Stages...>;
+template<typename Instrument, typename... Stages>
+using UnderlyerNetDeltaMetric = NetDeltaMetric<aggregation::UnderlyerKey, Instrument, Stages...>;
 
 } // namespace metrics
 

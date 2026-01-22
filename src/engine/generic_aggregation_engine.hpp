@@ -14,7 +14,7 @@ namespace engine {
 // Type trait: has_set_instrument_position
 // ============================================================================
 //
-// Detects if a metric type has a set_instrument_position(symbol, qty) method
+// Detects if a metric type has a set_instrument_position(symbol, qty) method (2-param)
 //
 
 template<typename T, typename = void>
@@ -30,44 +30,71 @@ template<typename T>
 inline constexpr bool has_set_instrument_position_v = has_set_instrument_position<T>::value;
 
 // ============================================================================
+// Type trait: has_set_instrument_position_with_instrument
+// ============================================================================
+//
+// Detects if a metric type has a set_instrument_position(symbol, qty, instrument) method (3-param)
+//
+
+template<typename T, typename Instrument, typename = void>
+struct has_set_instrument_position_with_instrument : std::false_type {};
+
+template<typename T, typename Instrument>
+struct has_set_instrument_position_with_instrument<T, Instrument,
+    std::void_t<decltype(std::declval<T>().set_instrument_position(
+        std::declval<std::string>(), std::declval<int64_t>(), std::declval<Instrument>()))>
+> : std::true_type {};
+
+template<typename T, typename Instrument>
+inline constexpr bool has_set_instrument_position_with_instrument_v =
+    has_set_instrument_position_with_instrument<T, Instrument>::value;
+
+// ============================================================================
 // GenericRiskAggregationEngine - Template-based aggregation engine
 // ============================================================================
 //
 // A generic engine that processes FIX messages and maintains real-time
 // aggregate metrics. The engine is parameterized on:
-//   - Provider: The InstrumentProvider type (must satisfy is_instrument_provider)
+//   - Instrument: The instrument data type (must satisfy is_instrument)
 //   - Metrics...: Zero or more metric types
+//
+// The caller is responsible for looking up instrument data and passing it
+// to the engine methods. This avoids redundant hashmap lookups.
 //
 // Example usage:
 //
-//   using Provider = instrument::StaticInstrumentProvider;
-//   using MyEngine = GenericRiskAggregationEngine<Provider,
-//       metrics::DeltaMetrics<Provider>,
-//       metrics::NotionalMetrics<Provider>>;
+//   using Instrument = instrument::InstrumentData;
+//   using MyEngine = GenericRiskAggregationEngine<Instrument,
+//       metrics::DeltaMetric<aggregation::UnderlyerKey, Instrument>,
+//       metrics::NotionalMetric<aggregation::GlobalKey, Instrument>>;
+//
+//   MyEngine engine;
+//   auto inst = provider.get_instrument(order.symbol);
+//   engine.on_new_order_single(order, inst);
 //
 // Accessor methods are automatically available based on which metrics are present,
 // provided via CRTP-based AccessorMixin specializations. Each metric type should
 // define its AccessorMixin specialization in its own header file.
 //
 // Each metric type must implement the following interface:
-//   - void set_instrument_provider(const Provider* provider)
-//   - void on_order_added(const TrackedOrder& order)
-//   - void on_order_removed(const TrackedOrder& order)
-//   - void on_order_updated(const TrackedOrder& order, int64_t old_qty)
-//   - void on_partial_fill(const TrackedOrder& order, int64_t filled_qty)
+//   - void on_order_added(const TrackedOrder& order, const Instrument& instrument)
+//   - void on_order_removed(const TrackedOrder& order, const Instrument& instrument)
+//   - void on_order_updated(const TrackedOrder& order, const Instrument& instrument, int64_t old_qty)
+//   - void on_partial_fill(const TrackedOrder& order, const Instrument& instrument, int64_t filled_qty)
+//   - void on_full_fill(const TrackedOrder& order, const Instrument& instrument, int64_t filled_qty)
+//   - void on_state_change(const TrackedOrder& order, const Instrument& instrument, OrderState old, OrderState new)
 //   - void clear()
 //
 // ============================================================================
 
-template<typename Provider, typename... Metrics>
+template<typename Instrument, typename... Metrics>
 class GenericRiskAggregationEngine
-    : public AccessorMixin<GenericRiskAggregationEngine<Provider, Metrics...>, Metrics>... {
+    : public AccessorMixin<GenericRiskAggregationEngine<Instrument, Metrics...>, Metrics>... {
 
-    static_assert(instrument::is_base_provider_v<Provider>,
-                  "Provider must satisfy at least base provider requirements (spot, fx)");
+    static_assert(instrument::is_instrument_v<Instrument>,
+                  "Instrument must satisfy instrument requirements");
 
 private:
-    const Provider* provider_ = nullptr;
     OrderBook order_book_;
     std::tuple<Metrics...> metrics_;
 
@@ -79,32 +106,9 @@ private:
     }
 
 public:
-    using provider_type = Provider;
+    using instrument_type = Instrument;
 
     GenericRiskAggregationEngine() = default;
-
-    explicit GenericRiskAggregationEngine(const Provider* provider)
-        : provider_(provider) {
-        // Set provider on all metrics
-        for_each_metric([provider](auto& metric) {
-            metric.set_instrument_provider(provider);
-        });
-    }
-
-    // ========================================================================
-    // InstrumentProvider access
-    // ========================================================================
-
-    void set_instrument_provider(const Provider* provider) {
-        provider_ = provider;
-        for_each_metric([provider](auto& metric) {
-            metric.set_instrument_provider(provider);
-        });
-    }
-
-    const Provider* instrument_provider() const {
-        return provider_;
-    }
 
     // ========================================================================
     // Metric access
@@ -137,17 +141,17 @@ public:
     // Outgoing message handlers (order sent)
     // ========================================================================
 
-    void on_new_order_single(const fix::NewOrderSingle& msg) {
+    void on_new_order_single(const fix::NewOrderSingle& msg, const Instrument& instrument) {
         order_book_.add_order(msg);
         auto* order = order_book_.get_order(msg.key);
         if (order) {
-            for_each_metric([order](auto& metric) {
-                metric.on_order_added(*order);
+            for_each_metric([order, &instrument](auto& metric) {
+                metric.on_order_added(*order, instrument);
             });
         }
     }
 
-    void on_order_cancel_replace(const fix::OrderCancelReplaceRequest& msg) {
+    void on_order_cancel_replace(const fix::OrderCancelReplaceRequest& msg, const Instrument& instrument) {
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
@@ -156,13 +160,13 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, instrument, old_state, new_state);
             });
         }
     }
 
-    void on_order_cancel_request(const fix::OrderCancelRequest& msg) {
+    void on_order_cancel_request(const fix::OrderCancelRequest& msg, const Instrument& instrument) {
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
@@ -171,8 +175,8 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, instrument, old_state, new_state);
             });
         }
     }
@@ -181,37 +185,37 @@ public:
     // Incoming message handlers (execution reports)
     // ========================================================================
 
-    void on_execution_report(const fix::ExecutionReport& msg) {
+    void on_execution_report(const fix::ExecutionReport& msg, const Instrument& instrument) {
         switch (msg.report_type()) {
             case fix::ExecutionReportType::INSERT_ACK:
-                handle_insert_ack(msg);
+                handle_insert_ack(msg, instrument);
                 break;
             case fix::ExecutionReportType::INSERT_NACK:
-                handle_insert_nack(msg);
+                handle_insert_nack(msg, instrument);
                 break;
             case fix::ExecutionReportType::UPDATE_ACK:
-                handle_update_ack(msg);
+                handle_update_ack(msg, instrument);
                 break;
             case fix::ExecutionReportType::UPDATE_NACK:
                 handle_update_nack(msg);
                 break;
             case fix::ExecutionReportType::CANCEL_ACK:
             case fix::ExecutionReportType::UNSOLICITED_CANCEL:
-                handle_cancel(msg);
+                handle_cancel(msg, instrument);
                 break;
             case fix::ExecutionReportType::CANCEL_NACK:
-                handle_cancel_nack(msg);
+                handle_cancel_nack(msg, instrument);
                 break;
             case fix::ExecutionReportType::PARTIAL_FILL:
-                handle_partial_fill(msg);
+                handle_partial_fill(msg, instrument);
                 break;
             case fix::ExecutionReportType::FULL_FILL:
-                handle_full_fill(msg);
+                handle_full_fill(msg, instrument);
                 break;
         }
     }
 
-    void on_order_cancel_reject(const fix::OrderCancelReject& msg) {
+    void on_order_cancel_reject(const fix::OrderCancelReject& msg, const Instrument& instrument) {
         auto* order = order_book_.get_order(msg.orig_key);
         if (!order) return;
 
@@ -224,8 +228,8 @@ public:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, instrument, old_state, new_state);
             });
         }
     }
@@ -251,17 +255,17 @@ public:
     // Set position for a specific instrument across all metrics that support it
     // Signed quantity: positive = long, negative = short
     // For gross metrics, absolute value is used internally
-    void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
-        for_each_metric([&symbol, signed_quantity](auto& metric) {
+    void set_instrument_position(const std::string& symbol, int64_t signed_quantity, const Instrument& instrument) {
+        for_each_metric([&symbol, signed_quantity, &instrument](auto& metric) {
             using MetricType = std::decay_t<decltype(metric)>;
-            if constexpr (has_set_instrument_position_v<MetricType>) {
-                metric.set_instrument_position(symbol, signed_quantity);
+            if constexpr (has_set_instrument_position_with_instrument_v<MetricType, Instrument>) {
+                metric.set_instrument_position(symbol, signed_quantity, instrument);
             }
         });
     }
 
 private:
-    void handle_insert_ack(const fix::ExecutionReport& msg) {
+    void handle_insert_ack(const fix::ExecutionReport& msg, const Instrument& instrument) {
         auto* order = order_book_.get_order(msg.key);
         if (!order) return;
 
@@ -270,24 +274,24 @@ private:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, instrument, old_state, new_state);
             });
         }
     }
 
-    void handle_insert_nack(const fix::ExecutionReport& msg) {
+    void handle_insert_nack(const fix::ExecutionReport& msg, const Instrument& instrument) {
         auto* order = order_book_.get_order(msg.key);
         if (!order) return;
 
-        for_each_metric([order](auto& metric) {
-            metric.on_order_removed(*order);
+        for_each_metric([order, &instrument](auto& metric) {
+            metric.on_order_removed(*order, instrument);
         });
 
         order_book_.reject_order(msg.key);
     }
 
-    void handle_update_ack(const fix::ExecutionReport& msg) {
+    void handle_update_ack(const fix::ExecutionReport& msg, const Instrument& instrument) {
         fix::OrderKey orig_key = msg.orig_key.value_or(msg.key);
         auto* order = order_book_.get_order(orig_key);
         if (!order) return;
@@ -311,13 +315,13 @@ private:
                     // First: remove old_qty from old stage and add old_qty to new stage
                     // Second: update from old_qty to new_qty in new stage
                     // These can be combined: remove old_qty from old stage, add new_qty to new stage
-                    for_each_metric([updated_order, old_leaves_qty, old_state, new_state](auto& metric) {
-                        metric.on_order_updated_with_state_change(*updated_order, old_leaves_qty, old_state, new_state);
+                    for_each_metric([updated_order, &instrument, old_leaves_qty, old_state, new_state](auto& metric) {
+                        metric.on_order_updated_with_state_change(*updated_order, instrument, old_leaves_qty, old_state, new_state);
                     });
                 } else {
                     // Same stage, just quantity update
-                    for_each_metric([updated_order, old_leaves_qty](auto& metric) {
-                        metric.on_order_updated(*updated_order, old_leaves_qty);
+                    for_each_metric([updated_order, &instrument, old_leaves_qty](auto& metric) {
+                        metric.on_order_updated(*updated_order, instrument, old_leaves_qty);
                     });
                 }
             }
@@ -329,19 +333,19 @@ private:
         order_book_.reject_replace(orig_key);
     }
 
-    void handle_cancel(const fix::ExecutionReport& msg) {
+    void handle_cancel(const fix::ExecutionReport& msg, const Instrument& instrument) {
         fix::OrderKey key = msg.orig_key.value_or(msg.key);
         auto* order = order_book_.resolve_order(key);
         if (!order) return;
 
-        for_each_metric([order](auto& metric) {
-            metric.on_order_removed(*order);
+        for_each_metric([order, &instrument](auto& metric) {
+            metric.on_order_removed(*order, instrument);
         });
 
         order_book_.complete_cancel(key);
     }
 
-    void handle_cancel_nack(const fix::ExecutionReport& msg) {
+    void handle_cancel_nack(const fix::ExecutionReport& msg, const Instrument& instrument) {
         fix::OrderKey orig_key = msg.orig_key.value_or(msg.key);
         auto* order = order_book_.get_order(orig_key);
         if (!order) return;
@@ -351,26 +355,26 @@ private:
         OrderState new_state = order->state;
 
         if (old_state != new_state) {
-            for_each_metric([order, old_state, new_state](auto& metric) {
-                metric.on_state_change(*order, old_state, new_state);
+            for_each_metric([order, &instrument, old_state, new_state](auto& metric) {
+                metric.on_state_change(*order, instrument, old_state, new_state);
             });
         }
     }
 
-    void handle_partial_fill(const fix::ExecutionReport& msg) {
+    void handle_partial_fill(const fix::ExecutionReport& msg, const Instrument& instrument) {
         auto* order = order_book_.resolve_order(msg.key);
         if (!order) return;
 
         auto result = order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
         if (result.has_value()) {
             int64_t filled_qty = result->filled_qty;
-            for_each_metric([order, filled_qty](auto& metric) {
-                metric.on_partial_fill(*order, filled_qty);
+            for_each_metric([order, &instrument, filled_qty](auto& metric) {
+                metric.on_partial_fill(*order, instrument, filled_qty);
             });
         }
     }
 
-    void handle_full_fill(const fix::ExecutionReport& msg) {
+    void handle_full_fill(const fix::ExecutionReport& msg, const Instrument& instrument) {
         auto* order = order_book_.resolve_order(msg.key);
         if (!order) return;
 
@@ -378,13 +382,13 @@ private:
         int64_t filled_qty = msg.last_qty;
 
         // Remove metrics BEFORE apply_fill updates leaves_qty to 0
-        for_each_metric([order](auto& metric) {
-            metric.on_order_removed(*order);
+        for_each_metric([order, &instrument](auto& metric) {
+            metric.on_order_removed(*order, instrument);
         });
 
         // Credit position stage with filled quantity
-        for_each_metric([order, filled_qty](auto& metric) {
-            metric.on_full_fill(*order, filled_qty);
+        for_each_metric([order, &instrument, filled_qty](auto& metric) {
+            metric.on_full_fill(*order, instrument, filled_qty);
         });
 
         order_book_.apply_fill(msg.key, msg.last_qty, msg.last_px);
@@ -392,11 +396,11 @@ private:
 };
 
 // ============================================================================
-// Specialization for engine with no provider (metrics-only, no provider needed)
+// Specialization for engine with void Instrument (metrics that don't need instrument data)
 // ============================================================================
 //
 // This specialization allows creating an engine with just metrics that don't
-// need an InstrumentProvider (e.g., OrderCountMetrics).
+// need instrument data (e.g., OrderCountMetrics).
 //
 
 template<typename... Metrics>
@@ -415,7 +419,7 @@ private:
     }
 
 public:
-    using provider_type = void;
+    using instrument_type = void;
 
     GenericRiskAggregationEngine() = default;
 
@@ -447,7 +451,7 @@ public:
     }
 
     // ========================================================================
-    // Outgoing message handlers (order sent)
+    // Outgoing message handlers (order sent) - no instrument needed
     // ========================================================================
 
     void on_new_order_single(const fix::NewOrderSingle& msg) {

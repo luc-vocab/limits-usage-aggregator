@@ -96,11 +96,11 @@ StaticInstrumentProvider create_options_provider() {
 class OptionsGrossNetPositionTest : public ::testing::Test {
 protected:
     // Position-stage only notional metrics (track filled orders)
-    using GrossPositionNotional = GlobalGrossNotionalMetric<StaticInstrumentProvider, PositionStage>;
-    using NetPositionNotional = GlobalNetNotionalMetric<StaticInstrumentProvider, PositionStage>;
+    using GrossPositionNotional = GlobalGrossNotionalMetric<InstrumentData, PositionStage>;
+    using NetPositionNotional = GlobalNetNotionalMetric<InstrumentData, PositionStage>;
 
     using TestEngine = RiskAggregationEngineWithLimits<
-        StaticInstrumentProvider,
+        InstrumentData,
         GrossPositionNotional,
         NetPositionNotional
     >;
@@ -114,7 +114,6 @@ protected:
 
     void SetUp() override {
         provider = create_options_provider();
-        engine.set_instrument_provider(&provider);
         engine.set_limit<GrossPositionNotional>(GlobalKey::instance(), MAX_GROSS_POSITION);
         engine.set_limit<NetPositionNotional>(GlobalKey::instance(), MAX_NET_POSITION);
     }
@@ -128,18 +127,15 @@ protected:
         return engine.get_metric<NetPositionNotional>().get_position(GlobalKey::instance());
     }
 
+    // Helper to get instrument from provider
+    InstrumentData get_instrument(const std::string& symbol) const {
+        return provider.get_instrument(symbol);
+    }
+
     // Instrument-based position manipulation (engine-level interface)
     // A single call updates both gross and net metrics
     void set_instrument_position(const std::string& symbol, int64_t signed_quantity) {
-        engine.set_instrument_position(symbol, signed_quantity);
-    }
-
-    double get_gross_instrument_position(const std::string& symbol) const {
-        return engine.get_metric<GrossPositionNotional>().get_instrument_position(symbol);
-    }
-
-    double get_net_instrument_position(const std::string& symbol) const {
-        return engine.get_metric<NetPositionNotional>().get_instrument_position(symbol);
+        engine.set_instrument_position(symbol, signed_quantity, get_instrument(symbol));
     }
 
     // Compute expected notional for an option
@@ -162,9 +158,11 @@ TEST_F(OptionsGrossNetPositionTest, SingleBidFillCreatesPosition) {
     EXPECT_DOUBLE_EQ(gross_position(), 0.0) << "Initial: gross_position=0";
     EXPECT_DOUBLE_EQ(net_position(), 0.0) << "Initial: net_position=0";
 
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto order = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_position(), 5000.0) << "After fill: gross_position=5000";
     EXPECT_DOUBLE_EQ(net_position(), 5000.0) << "After fill: net_position=+5000 (BID)";
@@ -178,9 +176,11 @@ TEST_F(OptionsGrossNetPositionTest, SingleAskFillCreatesPosition) {
     // MSFT_C300: qty=20, contract_size=50, spot=$8.00, fx=1.0
     // notional = 20 * 50 * 8.0 * 1.0 = 8,000
 
-    engine.on_new_order_single(create_option_order("ORD001", "MSFT_C300", "MSFT", Side::ASK, 8.0, 20));
-    engine.on_execution_report(create_ack("ORD001", 20));
-    engine.on_execution_report(create_fill("ORD001", 20, 0, 8.0));
+    auto order = create_option_order("ORD001", "MSFT_C300", "MSFT", Side::ASK, 8.0, 20);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
+    engine.on_execution_report(create_ack("ORD001", 20), inst);
+    engine.on_execution_report(create_fill("ORD001", 20, 0, 8.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_position(), 8000.0) << "After fill: gross_position=8000";
     EXPECT_DOUBLE_EQ(net_position(), -8000.0) << "After fill: net_position=-8000 (ASK)";
@@ -200,17 +200,21 @@ TEST_F(OptionsGrossNetPositionTest, MultipleOptionsGrossVsNet) {
     //   net_position = 5,000 - 8,000 = -3,000
 
     // BID order
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto order1 = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 10), inst1);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst1);
 
     EXPECT_DOUBLE_EQ(gross_position(), 5000.0) << "After AAPL BID fill: gross=5000";
     EXPECT_DOUBLE_EQ(net_position(), 5000.0) << "After AAPL BID fill: net=+5000";
 
     // ASK order
-    engine.on_new_order_single(create_option_order("ORD002", "MSFT_C300", "MSFT", Side::ASK, 8.0, 20));
-    engine.on_execution_report(create_ack("ORD002", 20));
-    engine.on_execution_report(create_fill("ORD002", 20, 0, 8.0));
+    auto order2 = create_option_order("ORD002", "MSFT_C300", "MSFT", Side::ASK, 8.0, 20);
+    auto inst2 = get_instrument(order2.symbol);
+    engine.on_new_order_single(order2, inst2);
+    engine.on_execution_report(create_ack("ORD002", 20), inst2);
+    engine.on_execution_report(create_fill("ORD002", 20, 0, 8.0), inst2);
 
     EXPECT_DOUBLE_EQ(gross_position(), 13000.0) << "After both fills: gross=13000";
     EXPECT_DOUBLE_EQ(net_position(), -3000.0) << "After both fills: net=-3000";
@@ -229,18 +233,22 @@ TEST_F(OptionsGrossNetPositionTest, DifferentContractSizes) {
     // MSFT: 10 * 50 * 8.0 = 4,000
 
     // AAPL BID
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto order1 = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 10), inst1);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst1);
 
     double aapl_notional = compute_notional("AAPL_C150", 10);
     EXPECT_DOUBLE_EQ(aapl_notional, 5000.0) << "AAPL notional = 10 * 100 * 5.0 = 5000";
     EXPECT_DOUBLE_EQ(gross_position(), 5000.0);
 
     // MSFT BID (same qty, different contract size)
-    engine.on_new_order_single(create_option_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 10));
-    engine.on_execution_report(create_ack("ORD002", 10));
-    engine.on_execution_report(create_fill("ORD002", 10, 0, 8.0));
+    auto order2 = create_option_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 10);
+    auto inst2 = get_instrument(order2.symbol);
+    engine.on_new_order_single(order2, inst2);
+    engine.on_execution_report(create_ack("ORD002", 10), inst2);
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 8.0), inst2);
 
     double msft_notional = compute_notional("MSFT_C300", 10);
     EXPECT_DOUBLE_EQ(msft_notional, 4000.0) << "MSFT notional = 10 * 50 * 8.0 = 4000";
@@ -257,16 +265,19 @@ TEST_F(OptionsGrossNetPositionTest, GrossPositionLimitCheck) {
     engine.set_limit<GrossPositionNotional>(GlobalKey::instance(), 20000.0);
 
     // AAPL_C150 BID qty=30 (notional = 30 * 100 * 5.0 = 15,000)
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 30));
-    engine.on_execution_report(create_ack("ORD001", 30));
-    engine.on_execution_report(create_fill("ORD001", 30, 0, 5.0));
+    auto order1 = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 30);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 30), inst1);
+    engine.on_execution_report(create_fill("ORD001", 30, 0, 5.0), inst1);
 
     EXPECT_DOUBLE_EQ(gross_position(), 15000.0);
 
     // Pre-trade check: MSFT_C300 BID qty=20 (notional = 20 * 50 * 8.0 = 8,000)
     // Would push gross to 23,000 > 20,000 limit
     auto order = create_option_order("ORD002", "MSFT_C300", "MSFT", Side::BID, 8.0, 20);
-    auto result = engine.pre_trade_check(order);
+    auto inst = get_instrument(order.symbol);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach gross limit: 15000 + 8000 = 23000 > 20000";
     EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_GROSS_NOTIONAL));
@@ -287,16 +298,19 @@ TEST_F(OptionsGrossNetPositionTest, NetPositionLimitCheck) {
     engine.set_limit<NetPositionNotional>(GlobalKey::instance(), 10000.0);
 
     // AAPL_C150 BID qty=15 (notional = 15 * 100 * 5.0 = 7,500)
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 15));
-    engine.on_execution_report(create_ack("ORD001", 15));
-    engine.on_execution_report(create_fill("ORD001", 15, 0, 5.0));
+    auto order1 = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 15);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 15), inst1);
+    engine.on_execution_report(create_fill("ORD001", 15, 0, 5.0), inst1);
 
     EXPECT_DOUBLE_EQ(net_position(), 7500.0);
 
     // Pre-trade check: AAPL_P150 BID qty=20 (notional = 20 * 100 * 3.0 = 6,000)
     // Would push net to 13,500 > 10,000 limit
     auto order = create_option_order("ORD002", "AAPL_P150", "AAPL", Side::BID, 3.0, 20);
-    auto result = engine.pre_trade_check(order);
+    auto inst = get_instrument(order.symbol);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach net limit: 7500 + 6000 = 13500 > 10000";
     EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_NET_NOTIONAL));
@@ -314,18 +328,22 @@ TEST_F(OptionsGrossNetPositionTest, NetPositionLimitCheck) {
 
 TEST_F(OptionsGrossNetPositionTest, AskOrdersReduceNetButIncreaseGross) {
     // Start with BID position: AAPL_C150 BID qty=10 (notional=5000)
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto order1 = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 10), inst1);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst1);
 
     EXPECT_DOUBLE_EQ(gross_position(), 5000.0);
     EXPECT_DOUBLE_EQ(net_position(), 5000.0);
 
     // Add ASK position: AAPL_C150 ASK qty=10 (notional=5000)
     // This increases gross but decreases net
-    engine.on_new_order_single(create_option_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD002", 10));
-    engine.on_execution_report(create_fill("ORD002", 10, 0, 5.0));
+    auto order2 = create_option_order("ORD002", "AAPL_C150", "AAPL", Side::ASK, 5.0, 10);
+    auto inst2 = get_instrument(order2.symbol);
+    engine.on_new_order_single(order2, inst2);
+    engine.on_execution_report(create_ack("ORD002", 10), inst2);
+    engine.on_execution_report(create_fill("ORD002", 10, 0, 5.0), inst2);
 
     EXPECT_DOUBLE_EQ(gross_position(), 10000.0) << "Gross increases: 5000 + 5000 = 10000";
     EXPECT_DOUBLE_EQ(net_position(), 0.0) << "Net cancels out: 5000 - 5000 = 0";
@@ -337,9 +355,11 @@ TEST_F(OptionsGrossNetPositionTest, AskOrdersReduceNetButIncreaseGross) {
 
 TEST_F(OptionsGrossNetPositionTest, ClearResetsPosition) {
     // Create position
-    engine.on_new_order_single(create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0));
+    auto order = create_option_order("ORD001", "AAPL_C150", "AAPL", Side::BID, 5.0, 10);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
+    engine.on_execution_report(create_ack("ORD001", 10), inst);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 5.0), inst);
 
     EXPECT_GT(gross_position(), 0.0);
 
@@ -361,17 +381,13 @@ TEST_F(OptionsGrossNetPositionTest, SetGrossPositionForInstrument) {
     // Notional = 20 * 100 * 5.0 = 10,000
     set_instrument_position("AAPL_C150", 20);
 
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("AAPL_C150"), 10000.0)
-        << "Instrument position: 20 * 100 * 5.0 = 10000";
     EXPECT_DOUBLE_EQ(gross_position(), 10000.0)
-        << "Global gross = instrument position = 10000";
+        << "After AAPL_C150: global gross = 10000";
 
     // Set position for MSFT_C300: qty=30 (long position)
     // Notional = 30 * 50 * 8.0 = 12,000
     set_instrument_position("MSFT_C300", 30);
 
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("MSFT_C300"), 12000.0)
-        << "MSFT position: 30 * 50 * 8.0 = 12000";
     EXPECT_DOUBLE_EQ(gross_position(), 22000.0)
         << "Global gross = 10000 + 12000 = 22000";
 }
@@ -388,17 +404,13 @@ TEST_F(OptionsGrossNetPositionTest, SetNetPositionForInstrument) {
     // Notional = 20 * 100 * 5.0 = 10,000
     set_instrument_position("AAPL_C150", 20);
 
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("AAPL_C150"), 10000.0)
-        << "Long position: +10000";
     EXPECT_DOUBLE_EQ(net_position(), 10000.0)
-        << "Global net = +10000";
+        << "After long position: global net = +10000";
 
     // Set short position for MSFT_C300: qty=-30 (negative = short/ASK)
     // Notional = 30 * 50 * 8.0 = 12,000 (but negative for short)
     set_instrument_position("MSFT_C300", -30);
 
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("MSFT_C300"), -12000.0)
-        << "Short position: -12000";
     EXPECT_DOUBLE_EQ(net_position(), -2000.0)
         << "Global net = 10000 - 12000 = -2000";
 }
@@ -416,9 +428,11 @@ TEST_F(OptionsGrossNetPositionTest, ManualPositionCombinedWithFills) {
     EXPECT_DOUBLE_EQ(net_position(), 10000.0);
 
     // Now fill an order for MSFT_C300: qty=20 (notional=8000)
-    engine.on_new_order_single(create_option_order("ORD001", "MSFT_C300", "MSFT", Side::BID, 8.0, 20));
-    engine.on_execution_report(create_ack("ORD001", 20));
-    engine.on_execution_report(create_fill("ORD001", 20, 0, 8.0));
+    auto order = create_option_order("ORD001", "MSFT_C300", "MSFT", Side::BID, 8.0, 20);
+    auto inst = get_instrument(order.symbol);
+    engine.on_new_order_single(order, inst);
+    engine.on_execution_report(create_ack("ORD001", 20), inst);
+    engine.on_execution_report(create_fill("ORD001", 20, 0, 8.0), inst);
 
     EXPECT_DOUBLE_EQ(gross_position(), 18000.0)
         << "Manual 10000 + fill 8000 = 18000";
@@ -441,7 +455,8 @@ TEST_F(OptionsGrossNetPositionTest, ManualPositionAffectsPreTradeCheck) {
     // Pre-trade check: MSFT_C300 BID qty=20 (notional = 20 * 50 * 8.0 = 8,000)
     // Would push gross to 23,000 > 20,000 limit
     auto order = create_option_order("ORD001", "MSFT_C300", "MSFT", Side::BID, 8.0, 20);
-    auto result = engine.pre_trade_check(order);
+    auto inst = get_instrument(order.symbol);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach: 15000 (manual) + 8000 = 23000 > 20000";
     EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_GROSS_NOTIONAL));
@@ -463,10 +478,8 @@ TEST_F(OptionsGrossNetPositionTest, UpdateExistingInstrumentPosition) {
 
     // Update position to qty=30 (notional=15000)
     set_instrument_position("AAPL_C150", 30);
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("AAPL_C150"), 15000.0)
-        << "Position updated to 30 * 100 * 5.0 = 15000";
     EXPECT_DOUBLE_EQ(gross_position(), 15000.0)
-        << "Global gross reflects updated position";
+        << "Position updated to 30 * 100 * 5.0 = 15000";
 }
 
 // ============================================================================
@@ -481,15 +494,15 @@ TEST_F(OptionsGrossNetPositionTest, MultipleInstrumentsWithDifferentContractSize
     // MSFT_P300: qty=25, contract_size=50, spot=6.0 => notional=7500
 
     set_instrument_position("AAPL_C150", 10);
+    EXPECT_DOUBLE_EQ(gross_position(), 5000.0) << "After AAPL_C150: 5000";
+
     set_instrument_position("AAPL_P150", 15);
+    EXPECT_DOUBLE_EQ(gross_position(), 9500.0) << "After AAPL_P150: 5000 + 4500 = 9500";
+
     set_instrument_position("MSFT_C300", 20);
+    EXPECT_DOUBLE_EQ(gross_position(), 17500.0) << "After MSFT_C300: 9500 + 8000 = 17500";
+
     set_instrument_position("MSFT_P300", 25);
-
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("AAPL_C150"), 5000.0);
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("AAPL_P150"), 4500.0);
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("MSFT_C300"), 8000.0);
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("MSFT_P300"), 7500.0);
-
     EXPECT_DOUBLE_EQ(gross_position(), 25000.0)
         << "Global gross = 5000 + 4500 + 8000 + 7500 = 25000";
 }
@@ -506,15 +519,15 @@ TEST_F(OptionsGrossNetPositionTest, NetPositionMixedLongShort) {
     // MSFT_P300: long 30 => +9000
 
     set_instrument_position("AAPL_C150", 20);   // long
+    EXPECT_DOUBLE_EQ(net_position(), 10000.0) << "After AAPL_C150 long: +10000";
+
     set_instrument_position("AAPL_P150", -15);  // short
+    EXPECT_DOUBLE_EQ(net_position(), 5500.0) << "After AAPL_P150 short: 10000 - 4500 = 5500";
+
     set_instrument_position("MSFT_C300", -10);  // short
+    EXPECT_DOUBLE_EQ(net_position(), 1500.0) << "After MSFT_C300 short: 5500 - 4000 = 1500";
+
     set_instrument_position("MSFT_P300", 30);   // long
-
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("AAPL_C150"), 10000.0);
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("AAPL_P150"), -4500.0);
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("MSFT_C300"), -4000.0);
-    EXPECT_DOUBLE_EQ(get_net_instrument_position("MSFT_P300"), 9000.0);
-
     EXPECT_DOUBLE_EQ(net_position(), 10500.0)
         << "Global net = 10000 - 4500 - 4000 + 9000 = 10500";
 }
@@ -537,8 +550,6 @@ TEST_F(OptionsGrossNetPositionTest, ClearRemovesInstrumentPositions) {
 
     EXPECT_DOUBLE_EQ(gross_position(), 0.0) << "Clear removes all gross positions";
     EXPECT_DOUBLE_EQ(net_position(), 0.0) << "Clear removes all net positions";
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("AAPL_C150"), 0.0);
-    EXPECT_DOUBLE_EQ(get_gross_instrument_position("MSFT_C300"), 0.0);
 }
 
 // ============================================================================
@@ -553,15 +564,18 @@ TEST_F(OptionsGrossNetPositionTest, PreTradeCheckMixedPositions) {
     EXPECT_DOUBLE_EQ(net_position(), 8000.0);
 
     // Fill a BID order for MSFT_C300: qty=10 (notional=4000)
-    engine.on_new_order_single(create_option_order("ORD001", "MSFT_C300", "MSFT", Side::BID, 8.0, 10));
-    engine.on_execution_report(create_ack("ORD001", 10));
-    engine.on_execution_report(create_fill("ORD001", 10, 0, 8.0));
+    auto order1 = create_option_order("ORD001", "MSFT_C300", "MSFT", Side::BID, 8.0, 10);
+    auto inst1 = get_instrument(order1.symbol);
+    engine.on_new_order_single(order1, inst1);
+    engine.on_execution_report(create_ack("ORD001", 10), inst1);
+    engine.on_execution_report(create_fill("ORD001", 10, 0, 8.0), inst1);
 
     EXPECT_DOUBLE_EQ(net_position(), 12000.0) << "Manual 8000 + fill 4000 = 12000";
 
     // Pre-trade check: Another BID for AAPL_P150 qty=20 (notional=6000) would breach limit
     auto order = create_option_order("ORD002", "AAPL_P150", "AAPL", Side::BID, 3.0, 20);
-    auto result = engine.pre_trade_check(order);
+    auto inst = get_instrument(order.symbol);
+    auto result = engine.pre_trade_check(order, inst);
 
     EXPECT_TRUE(result.would_breach) << "Should breach: 12000 + 6000 = 18000 > 15000";
     EXPECT_TRUE(result.has_breach(LimitType::GLOBAL_NET_NOTIONAL));
