@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../src/engine/risk_engine.hpp"
+#include "../src/engine/risk_engine_with_limits.hpp"
 #include "../src/metrics/order_count_metric.hpp"
 #include "../src/fix/fix_parser.hpp"
 
@@ -120,7 +120,7 @@ protected:
     using InFlightOrdersPerSide = OrderCountMetric<InstrumentSideKey, InFlightStage>;
     using OpenQuotedInstruments = QuotedInstrumentCountMetric<OpenStage>;
 
-    using TestEngine = GenericRiskAggregationEngine<
+    using TestEngine = RiskAggregationEngineWithLimits<
         void,  // No provider needed
         OpenOrdersPerSide,
         InFlightOrdersPerSide,
@@ -132,6 +132,12 @@ protected:
     // Limits
     static constexpr int64_t MAX_OPEN_PER_SIDE = 1;
     static constexpr int64_t MAX_QUOTED_INSTRUMENTS = 2;
+
+    void SetUp() override {
+        // Configure limits
+        engine.set_default_order_count_limit(MAX_OPEN_PER_SIDE);
+        engine.set_default_quoted_instruments_limit(MAX_QUOTED_INSTRUMENTS);
+    }
 
     // Accessors
     int64_t open_orders(const std::string& symbol, Side side) const {
@@ -146,11 +152,6 @@ protected:
 
     int64_t quoted_instruments(const std::string& underlyer) const {
         return engine.get_metric<OpenQuotedInstruments>().get(UnderlyerKey{underlyer});
-    }
-
-    // Pre-trade checks
-    bool would_breach_open_limit(const std::string& symbol, Side side) const {
-        return (open_orders(symbol, side) + in_flight_orders(symbol, side)) >= MAX_OPEN_PER_SIDE;
     }
 
     // Helper to assert all metrics at once
@@ -259,29 +260,39 @@ TEST_F(OptionUnderlyerRefactoredTest, LimitEnforcement) {
     const std::string AAPL = "AAPL";
 
     // Step 1: INSERT & ACK OPT1 BID
-    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
-    // After INSERT, order is in-flight, which counts towards the limit (open+in_flight >= 1)
-    EXPECT_TRUE(would_breach_open_limit(OPT1, Side::BID)) << "After INSERT, in-flight counts towards limit";
+    auto order1 = create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100);
+    engine.on_new_order_single(order1);
+    // After INSERT, order is in-flight, which counts towards the order count limit
+    auto check1 = engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100));
+    EXPECT_TRUE(check1.would_breach) << "After INSERT, in-flight counts towards limit";
+    EXPECT_TRUE(check1.has_breach(LimitType::ORDER_COUNT));
+
     engine.on_execution_report(create_ack("ORD001", 100));
 
     // OPT1 BID now at limit (1 open)
-    EXPECT_TRUE(would_breach_open_limit(OPT1, Side::BID)) << "OPT1 BID at limit";
-    EXPECT_FALSE(would_breach_open_limit(OPT1, Side::ASK)) << "OPT1 ASK not at limit";
-    EXPECT_FALSE(would_breach_open_limit(OPT2, Side::BID)) << "OPT2 BID not at limit";
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::BID, 5.0, 100)).would_breach)
+        << "OPT1 BID at limit";
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT1, AAPL, Side::ASK, 5.0, 100)).would_breach)
+        << "OPT1 ASK not at limit";
+    EXPECT_FALSE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::BID, 6.0, 50)).would_breach)
+        << "OPT2 BID not at limit";
 
     // Step 2: INSERT & ACK OPT2 ASK
     engine.on_new_order_single(create_order("ORD002", OPT2, AAPL, Side::ASK, 6.0, 50));
     engine.on_execution_report(create_ack("ORD002", 50));
 
     // OPT2 ASK now at limit, quoted=2
-    EXPECT_TRUE(would_breach_open_limit(OPT2, Side::ASK)) << "OPT2 ASK at limit";
+    EXPECT_TRUE(engine.pre_trade_check(create_order("X", OPT2, AAPL, Side::ASK, 6.0, 50)).would_breach)
+        << "OPT2 ASK at limit";
     EXPECT_EQ(quoted_instruments(AAPL), 2) << "Quoted instruments = 2";
 
-    // Step 3: Try to INSERT OPT3 - quoted instrument limit check
-    // Note: This test verifies we can check the limit, actual enforcement is application logic
-    EXPECT_FALSE(would_breach_open_limit(OPT3, Side::BID)) << "OPT3 BID not at limit (per-side)";
-    // But we're at quoted_instruments limit of 2 (would need to check separately)
-    EXPECT_EQ(quoted_instruments(AAPL), 2) << "Would exceed quoted instruments limit";
+    // Step 3: Try to INSERT OPT3 - would breach quoted instruments limit
+    auto opt3_order = create_order("ORD003", OPT3, AAPL, Side::BID, 4.0, 100);
+    auto check3 = engine.pre_trade_check(opt3_order);
+    // OPT3 doesn't have an order count breach (per-side is free)
+    // But it would breach quoted instruments limit
+    EXPECT_TRUE(check3.would_breach) << "OPT3 should breach quoted instruments limit";
+    EXPECT_TRUE(check3.has_breach(LimitType::QUOTED_INSTRUMENTS));
 }
 
 // ============================================================================
@@ -400,4 +411,34 @@ TEST_F(OptionUnderlyerRefactoredTest, ClearResetsAll) {
     EXPECT_EQ(open_orders(OPT1, Side::BID), 0);
     EXPECT_EQ(in_flight_orders(OPT2, Side::ASK), 0);
     EXPECT_EQ(quoted_instruments(AAPL), 0);
+}
+
+// ============================================================================
+// Test: Pre-trade check result contains useful information
+// ============================================================================
+
+TEST_F(OptionUnderlyerRefactoredTest, PreTradeCheckResultDetails) {
+    const std::string OPT1 = "AAPL_OPT1";
+    const std::string AAPL = "AAPL";
+
+    // Send order to hit limit
+    engine.on_new_order_single(create_order("ORD001", OPT1, AAPL, Side::BID, 5.0, 100));
+    engine.on_execution_report(create_ack("ORD001", 100));
+
+    // Check pre-trade for new order on same instrument-side
+    auto result = engine.pre_trade_check(create_order("ORD002", OPT1, AAPL, Side::BID, 5.0, 100));
+    EXPECT_TRUE(result.would_breach);
+    EXPECT_FALSE(result);  // operator bool returns !would_breach
+
+    // Verify breach details
+    const auto* breach = result.get_breach(LimitType::ORDER_COUNT);
+    ASSERT_NE(breach, nullptr);
+    EXPECT_DOUBLE_EQ(breach->current_usage, 1.0);
+    EXPECT_DOUBLE_EQ(breach->hypothetical_usage, 2.0);
+    EXPECT_DOUBLE_EQ(breach->limit_value, 1.0);
+
+    // Verify to_string()
+    std::string str = result.to_string();
+    EXPECT_NE(str.find("ORDER_COUNT"), std::string::npos);
+    EXPECT_NE(str.find("FAILED"), std::string::npos);
 }

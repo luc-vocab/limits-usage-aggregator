@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../src/engine/risk_engine.hpp"
+#include "../src/engine/risk_engine_with_limits.hpp"
 #include "../src/metrics/notional_metric.hpp"
 #include "../src/instrument/instrument.hpp"
 #include "../src/fix/fix_parser.hpp"
@@ -121,7 +121,7 @@ class GrossOpenNotionalTest : public ::testing::Test {
 protected:
     using GlobalNotional = GlobalNotionalMetric<SimpleInstrumentProvider, OpenStage, InFlightStage>;
 
-    using TestEngine = GenericRiskAggregationEngine<
+    using TestEngine = RiskAggregationEngineWithLimits<
         SimpleInstrumentProvider,
         GlobalNotional
     >;
@@ -135,14 +135,11 @@ protected:
     void SetUp() override {
         provider = create_stock_provider();
         engine.set_instrument_provider(&provider);
+        engine.set_global_notional_limit(MAX_GROSS_NOTIONAL);
     }
 
     double gross_notional() const {
         return engine.get_metric<GlobalNotional>().get(GlobalKey::instance());
-    }
-
-    bool would_breach_limit(double additional_notional) const {
-        return (gross_notional() + additional_notional) > MAX_GROSS_NOTIONAL;
     }
 
     // Compute notional for an order
@@ -216,16 +213,29 @@ TEST_F(GrossOpenNotionalTest, LimitEnforcement) {
     engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 100));
     engine.on_execution_report(create_ack("ORD001", 100));
 
-    EXPECT_FALSE(would_breach_limit(compute_notional("MSFT", 200)))  // +$60,000 = $75,000 < $100,000
-        << "Should not breach: 15000 + 60000 = 75000 < 100000";
+    // Pre-trade check for MSFT order (+$60,000 = $75,000 < $100,000)
+    auto msft_order = create_order("ORD002", "MSFT", Side::BID, 300.0, 200);
+    auto result1 = engine.pre_trade_check(msft_order);
+    EXPECT_FALSE(result1.would_breach) << "Should not breach: 15000 + 60000 = 75000 < 100000";
 
     // Add more: 200 * $300 = $60,000 (total: $75,000)
-    engine.on_new_order_single(create_order("ORD002", "MSFT", Side::BID, 300.0, 200));
+    engine.on_new_order_single(msft_order);
     engine.on_execution_report(create_ack("ORD002", 200));
 
     EXPECT_DOUBLE_EQ(gross_notional(), 75000.0);
-    EXPECT_TRUE(would_breach_limit(compute_notional("GOOG", 300)))  // +$30,000 = $105,000 > $100,000
-        << "Should breach: 75000 + 30000 = 105000 > 100000";
+
+    // Pre-trade check for GOOG order (+$30,000 = $105,000 > $100,000)
+    auto goog_order = create_order("ORD003", "GOOG", Side::BID, 100.0, 300);
+    auto result2 = engine.pre_trade_check(goog_order);
+    EXPECT_TRUE(result2.would_breach) << "Should breach: 75000 + 30000 = 105000 > 100000";
+    EXPECT_TRUE(result2.has_breach(LimitType::GLOBAL_NOTIONAL));
+
+    // Verify breach details
+    const auto* breach = result2.get_breach(LimitType::GLOBAL_NOTIONAL);
+    ASSERT_NE(breach, nullptr);
+    EXPECT_DOUBLE_EQ(breach->current_usage, 75000.0);
+    EXPECT_DOUBLE_EQ(breach->hypothetical_usage, 105000.0);
+    EXPECT_DOUBLE_EQ(breach->limit_value, 100000.0);
 }
 
 TEST_F(GrossOpenNotionalTest, NackFreesNotional) {
@@ -300,4 +310,22 @@ TEST_F(GrossOpenNotionalTest, Clear) {
     engine.clear();
 
     EXPECT_DOUBLE_EQ(gross_notional(), 0.0);
+}
+
+TEST_F(GrossOpenNotionalTest, PreTradeCheckResultToString) {
+    // Fill up to near the limit: $75,000
+    engine.on_new_order_single(create_order("ORD001", "AAPL", Side::BID, 150.0, 500));  // $75,000
+    engine.on_execution_report(create_ack("ORD001", 500));
+
+    // Check pre-trade for order that would breach
+    auto order = create_order("ORD002", "MSFT", Side::BID, 300.0, 100);  // $30,000
+    auto result = engine.pre_trade_check(order);
+
+    EXPECT_TRUE(result.would_breach);
+    EXPECT_EQ(result.breaches.size(), 1u);
+
+    // Verify to_string() contains expected information
+    std::string result_str = result.to_string();
+    EXPECT_NE(result_str.find("GLOBAL_NOTIONAL"), std::string::npos);
+    EXPECT_NE(result_str.find("FAILED"), std::string::npos);
 }

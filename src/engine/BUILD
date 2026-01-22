@@ -24,6 +24,12 @@ cc_library(
     hdrs = ["limits_config.hpp"],
 )
 
+# Pre-trade check result types
+cc_library(
+    name = "pre_trade_check",
+    hdrs = ["pre_trade_check.hpp"],
+)
+
 # Generic aggregation engine - template-based, metric-agnostic
 cc_library(
     name = "generic_aggregation_engine",
@@ -43,6 +49,7 @@ cc_library(
     deps = [
         ":generic_aggregation_engine",
         ":limits_config",
+        ":pre_trade_check",
         "//src/metrics",
     ],
 )
