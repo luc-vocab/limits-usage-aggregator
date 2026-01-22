@@ -30,7 +30,7 @@ class LimitStore {
 private:
     std::unordered_map<Key, double> limits_;
     double default_limit_ = std::numeric_limits<double>::max();
-    LimitComparisonMode mode_ = LimitComparisonMode::SIGNED;
+    LimitComparisonMode mode_ = LimitComparisonMode::ABSOLUTE;
 
 public:
     // Set the default limit (used when no specific limit is set)
@@ -101,7 +101,7 @@ public:
     void reset() {
         limits_.clear();
         default_limit_ = std::numeric_limits<double>::max();
-        mode_ = LimitComparisonMode::SIGNED;
+        mode_ = LimitComparisonMode::ABSOLUTE;
     }
 };
 

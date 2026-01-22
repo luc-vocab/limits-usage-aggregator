@@ -492,11 +492,9 @@ TEST_F(PortfolioInstrumentNetNotionalTest, PreTradeCheckPositiveNetNotionalBreac
     const double SPOT = 150.0;
     const double LIMIT = 20000.0;  // Max $20,000 net notional (either direction)
 
-    // Set limit with ABSOLUTE mode to check both positive and negative breaches
+    // Set limit (ABSOLUTE mode is default, checks both positive and negative breaches)
     PortfolioInstrumentKey key{PORTFOLIO, SYMBOL};
     engine.set_limit<PortfolioInstrumentNetNotional>(key, LIMIT);
-    engine.get_limit_store<PortfolioInstrumentNetNotional>().set_comparison_mode(
-        LimitComparisonMode::ABSOLUTE);
 
     // First order: BID 100 shares = +$15,000 (within limit)
     auto order1 = create_order("ORD001", SYMBOL, Side::BID, SPOT, 100, PORTFOLIO);
@@ -542,11 +540,9 @@ TEST_F(PortfolioInstrumentNetNotionalTest, PreTradeCheckNegativeNetNotionalBreac
     const double SPOT = 150.0;
     const double LIMIT = 20000.0;  // Max $20,000 net notional (either direction)
 
-    // Set limit with ABSOLUTE mode to check both positive and negative breaches
+    // Set limit (ABSOLUTE mode is default, checks both positive and negative breaches)
     PortfolioInstrumentKey key{PORTFOLIO, SYMBOL};
     engine.set_limit<PortfolioInstrumentNetNotional>(key, LIMIT);
-    engine.get_limit_store<PortfolioInstrumentNetNotional>().set_comparison_mode(
-        LimitComparisonMode::ABSOLUTE);
 
     // First order: ASK 100 shares = -$15,000 (within limit, |−15000| < 20000)
     auto order1 = create_order("ORD001", SYMBOL, Side::ASK, SPOT, 100, PORTFOLIO);
@@ -594,8 +590,6 @@ TEST_F(PortfolioInstrumentNetNotionalTest, PreTradeCheckMixedDirectionsWithLimit
 
     PortfolioInstrumentKey key{PORTFOLIO, SYMBOL};
     engine.set_limit<PortfolioInstrumentNetNotional>(key, LIMIT);
-    engine.get_limit_store<PortfolioInstrumentNetNotional>().set_comparison_mode(
-        LimitComparisonMode::ABSOLUTE);
 
     // Build up short position: ASK 150 shares = -$22,500 (breach)
     // But we'll do it in parts that don't breach individually
