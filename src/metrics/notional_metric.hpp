@@ -12,6 +12,7 @@
 namespace engine {
     struct TrackedOrder;
     enum class OrderState;
+    enum class LimitType;
 }
 
 namespace metrics {
@@ -44,6 +45,48 @@ public:
     using value_type = double;
     using provider_type = Provider;
     using Config = aggregation::StageConfig<Stages...>;
+
+    // ========================================================================
+    // Static methods for pre-trade limit checking
+    // ========================================================================
+
+    // Compute the notional contribution for a new order
+    static double compute_order_contribution(
+        const fix::NewOrderSingle& order,
+        const Provider* provider) {
+        if (!provider) return 0.0;
+        return instrument::compute_notional(*provider, order.symbol, order.quantity);
+    }
+
+    // Extract the key from a NewOrderSingle
+    static Key extract_key(const fix::NewOrderSingle& order) {
+        if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return aggregation::GlobalKey::instance();
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return Key{order.strategy_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return Key{order.portfolio_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::UnderlyerKey>) {
+            return Key{order.underlyer};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentKey>) {
+            return Key{order.symbol};
+        } else {
+            static_assert(sizeof(Key) == 0, "Unsupported key type for NotionalMetric");
+        }
+    }
+
+    // Get the limit type for this metric
+    static constexpr engine::LimitType limit_type() {
+        if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return engine::LimitType::GLOBAL_NOTIONAL;
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return engine::LimitType::STRATEGY_NOTIONAL;
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return engine::LimitType::PORTFOLIO_NOTIONAL;
+        } else {
+            return engine::LimitType::GLOBAL_NOTIONAL;  // Default fallback
+        }
+    }
 
 private:
     // Per-stage data: maps key -> notional value, plus instrument quantities for recomputation

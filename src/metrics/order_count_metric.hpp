@@ -11,6 +11,7 @@
 namespace engine {
     struct TrackedOrder;
     enum class OrderState;
+    enum class LimitType;
 }
 
 namespace metrics {
@@ -35,7 +36,44 @@ class OrderCountMetric {
 public:
     using key_type = Key;
     using value_type = int64_t;
+    using provider_type = void;  // No provider needed for order counts
     using Config = aggregation::StageConfig<Stages...>;
+
+    // ========================================================================
+    // Static methods for pre-trade limit checking
+    // ========================================================================
+
+    // Returns 1 for each new order (order count contribution is always 1)
+    template<typename Provider>
+    static int64_t compute_order_contribution(
+        const fix::NewOrderSingle& /*order*/,
+        const Provider* /*provider*/) {
+        return 1;
+    }
+
+    // Extract the key from a NewOrderSingle
+    static Key extract_key(const fix::NewOrderSingle& order) {
+        if constexpr (std::is_same_v<Key, aggregation::InstrumentSideKey>) {
+            return Key{order.symbol, static_cast<int>(order.side)};
+        } else if constexpr (std::is_same_v<Key, aggregation::InstrumentKey>) {
+            return Key{order.symbol};
+        } else if constexpr (std::is_same_v<Key, aggregation::GlobalKey>) {
+            return aggregation::GlobalKey::instance();
+        } else if constexpr (std::is_same_v<Key, aggregation::UnderlyerKey>) {
+            return Key{order.underlyer};
+        } else if constexpr (std::is_same_v<Key, aggregation::StrategyKey>) {
+            return Key{order.strategy_id};
+        } else if constexpr (std::is_same_v<Key, aggregation::PortfolioKey>) {
+            return Key{order.portfolio_id};
+        } else {
+            static_assert(sizeof(Key) == 0, "Unsupported key type for OrderCountMetric");
+        }
+    }
+
+    // Get the limit type for this metric
+    static constexpr engine::LimitType limit_type() {
+        return engine::LimitType::ORDER_COUNT;
+    }
 
 private:
     using Bucket = aggregation::AggregationBucket<Key, aggregation::CountCombiner>;
@@ -182,7 +220,33 @@ class QuotedInstrumentCountMetric {
 public:
     using key_type = aggregation::UnderlyerKey;
     using value_type = int64_t;
+    using provider_type = void;  // No provider needed
     using Config = aggregation::StageConfig<Stages...>;
+
+    // ========================================================================
+    // Static methods for pre-trade limit checking
+    // ========================================================================
+
+    // Returns 1 for a new instrument on this underlyer (assumes it's new)
+    // The caller must check if the instrument is already quoted
+    template<typename Provider>
+    static int64_t compute_order_contribution(
+        const fix::NewOrderSingle& /*order*/,
+        const Provider* /*provider*/) {
+        // Returns 1, assuming this might be a new instrument
+        // The engine must check if instrument is already quoted
+        return 1;
+    }
+
+    // Extract the key from a NewOrderSingle
+    static key_type extract_key(const fix::NewOrderSingle& order) {
+        return aggregation::UnderlyerKey{order.underlyer};
+    }
+
+    // Get the limit type for this metric
+    static constexpr engine::LimitType limit_type() {
+        return engine::LimitType::QUOTED_INSTRUMENTS;
+    }
 
 private:
     // Per-stage data structure

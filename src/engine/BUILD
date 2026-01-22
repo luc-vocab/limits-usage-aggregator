@@ -30,6 +30,17 @@ cc_library(
     hdrs = ["pre_trade_check.hpp"],
 )
 
+# Metric limit store - generic limit storage per metric
+cc_library(
+    name = "metric_limit_store",
+    hdrs = ["metric_limit_store.hpp"],
+    deps = [
+        ":limits_config",
+        "//src/aggregation",
+        "//src/fix",
+    ],
+)
+
 # Generic aggregation engine - template-based, metric-agnostic
 cc_library(
     name = "generic_aggregation_engine",
@@ -49,6 +60,7 @@ cc_library(
     deps = [
         ":generic_aggregation_engine",
         ":limits_config",
+        ":metric_limit_store",
         ":pre_trade_check",
         "//src/metrics",
     ],

@@ -2,6 +2,7 @@
 
 #include "generic_aggregation_engine.hpp"
 #include "limits_config.hpp"
+#include "metric_limit_store.hpp"
 #include "pre_trade_check.hpp"
 #include "../metrics/delta_metric.hpp"
 #include "../metrics/order_count_metric.hpp"
@@ -20,37 +21,37 @@ namespace engine {
 //   - Provider: The InstrumentProvider type
 //   - Metrics...: Zero or more metric types
 //
-// Supports limits for:
-// - Quoted instruments count per underlyer
-// - Gross/net delta per underlyer or global
-// - Notional per strategy/portfolio
+// Each metric type must have:
+//   - key_type: The key type for the limit store
+//   - value_type: The value type tracked by the metric
+//   - static compute_order_contribution(order, provider): contribution for limit check
+//   - static extract_key(order): extract key from order
+//   - static limit_type(): the LimitType enum value
+//
+// Generic API:
+//   engine.set_limit<MetricType>(key, limit);
+//   engine.set_default_limit<MetricType>(limit);
+//   engine.get_limit<MetricType>(key);
+//   engine.get_limit_store<MetricType>();
 //
 // Example usage:
 //   using Provider = instrument::StaticInstrumentProvider;
 //   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider,
-//       metrics::DeltaMetrics<Provider, aggregation::AllStages>,
-//       metrics::OrderCountMetrics<aggregation::AllStages>>;
+//       metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
+//       metrics::NetDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
+//       metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>>;
 //
-//   EngineWithLimits engine;
-//   engine.set_quoted_instruments_limit("AAPL", 5);
-//   if (engine.would_breach_quoted_instruments_limit("AAPL", "AAPL_OPT1")) {
-//       // Reject order
-//   }
+//   EngineWithLimits engine(&provider);
+//   engine.set_limit<metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>>(
+//       aggregation::UnderlyerKey{"AAPL"}, 10000.0);
+//   auto result = engine.pre_trade_check(order);
 //
 
 template<typename Provider, typename... Metrics>
 class RiskAggregationEngineWithLimits {
 private:
     GenericRiskAggregationEngine<Provider, Metrics...> engine_;
-
-    // Limit stores for different metrics
-    StringLimitStore order_count_limits_;         // Key: "symbol:side" composite
-    StringLimitStore quoted_instruments_limits_;
-    StringLimitStore gross_delta_limits_;
-    StringLimitStore net_delta_limits_;
-    StringLimitStore strategy_notional_limits_;
-    StringLimitStore portfolio_notional_limits_;
-    StringLimitStore global_notional_limits_;     // Key: "" (single global limit)
+    MetricLimitStores<Metrics...> limits_;
 
     // Type aliases for finding the correct metric types
     using OrderCountMetricType = order_count_metric_t<Metrics...>;
@@ -62,7 +63,8 @@ public:
 
     RiskAggregationEngineWithLimits() = default;
 
-    explicit RiskAggregationEngineWithLimits(const Provider* provider)
+    template<typename P = Provider, typename = std::enable_if_t<!std::is_void_v<P>>>
+    explicit RiskAggregationEngineWithLimits(const P* provider)
         : engine_(provider) {}
 
     // ========================================================================
@@ -72,12 +74,23 @@ public:
     GenericRiskAggregationEngine<Provider, Metrics...>& engine() { return engine_; }
     const GenericRiskAggregationEngine<Provider, Metrics...>& engine() const { return engine_; }
 
-    void set_instrument_provider(const Provider* provider) {
+    template<typename P = Provider>
+    std::enable_if_t<!std::is_void_v<P>, void>
+    set_instrument_provider(const P* provider) {
         engine_.set_instrument_provider(provider);
     }
 
-    const Provider* instrument_provider() const {
+    template<typename P = Provider>
+    std::enable_if_t<!std::is_void_v<P>, const P*>
+    instrument_provider() const {
         return engine_.instrument_provider();
+    }
+
+    // For void provider - return nullptr
+    template<typename P = Provider>
+    std::enable_if_t<std::is_void_v<P>, std::nullptr_t>
+    instrument_provider() const {
+        return nullptr;
     }
 
     // Forward all message handlers
@@ -111,13 +124,7 @@ public:
     }
 
     void clear_all_limits() {
-        order_count_limits_.reset();
-        quoted_instruments_limits_.reset();
-        gross_delta_limits_.reset();
-        net_delta_limits_.reset();
-        strategy_notional_limits_.reset();
-        portfolio_notional_limits_.reset();
-        global_notional_limits_.reset();
+        limits_.reset();
     }
 
     // ========================================================================
@@ -140,110 +147,130 @@ public:
     }
 
     // ========================================================================
-    // Order Count Limits (per instrument-side)
+    // Generic Limit API
     // ========================================================================
 
-    // Set limit for a specific instrument-side combination
-    void set_order_count_limit(const std::string& symbol, fix::Side side, int64_t limit) {
-        order_count_limits_.set_limit(make_order_count_key(symbol, side), static_cast<double>(limit));
+    // Set limit for a specific metric and key
+    template<typename Metric>
+    void set_limit(const typename Metric::key_type& key, double limit) {
+        limits_.template get<Metric>().set_limit(key, limit);
     }
 
-    // Set default limit for all instrument-side combinations
+    // Set default limit for a specific metric
+    template<typename Metric>
+    void set_default_limit(double limit) {
+        limits_.template get<Metric>().set_default_limit(limit);
+    }
+
+    // Get limit for a specific metric and key
+    template<typename Metric>
+    double get_limit(const typename Metric::key_type& key) const {
+        return limits_.template get<Metric>().get_limit(key);
+    }
+
+    // Get the limit store for a specific metric
+    template<typename Metric>
+    LimitStore<typename Metric::key_type>& get_limit_store() {
+        return limits_.template get<Metric>();
+    }
+
+    template<typename Metric>
+    const LimitStore<typename Metric::key_type>& get_limit_store() const {
+        return limits_.template get<Metric>();
+    }
+
+    // ========================================================================
+    // Backward-compatible Limit API (delegates to generic API)
+    // ========================================================================
+
+    // Order Count Limits (per instrument-side)
+    void set_order_count_limit(const std::string& symbol, fix::Side side, int64_t limit) {
+        set_order_count_limit_internal(
+            aggregation::InstrumentSideKey{symbol, static_cast<int>(side)},
+            static_cast<double>(limit));
+    }
+
     void set_default_order_count_limit(int64_t limit) {
-        order_count_limits_.set_default_limit(static_cast<double>(limit));
+        set_default_order_count_limit_internal(static_cast<double>(limit));
     }
 
     double get_order_count_limit(const std::string& symbol, fix::Side side) const {
-        return order_count_limits_.get_limit(make_order_count_key(symbol, side));
+        return get_order_count_limit_internal(
+            aggregation::InstrumentSideKey{symbol, static_cast<int>(side)});
     }
 
-    // ========================================================================
-    // Quoted Instruments Limits (requires OrderCountMetrics)
-    // ========================================================================
-
+    // Quoted Instruments Limits
     void set_quoted_instruments_limit(const std::string& underlyer, double limit) {
-        quoted_instruments_limits_.set_limit(underlyer, limit);
+        set_quoted_instruments_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
     }
 
     void set_default_quoted_instruments_limit(double limit) {
-        quoted_instruments_limits_.set_default_limit(limit);
+        set_default_quoted_instruments_limit_internal(limit);
     }
 
     double get_quoted_instruments_limit(const std::string& underlyer) const {
-        return quoted_instruments_limits_.get_limit(underlyer);
+        return get_quoted_instruments_limit_internal(aggregation::UnderlyerKey{underlyer});
     }
 
-
-    // ========================================================================
-    // Delta Limits (requires DeltaMetrics<Provider>)
-    // ========================================================================
-
+    // Gross Delta Limits
     void set_gross_delta_limit(const std::string& underlyer, double limit) {
-        gross_delta_limits_.set_limit(underlyer, limit);
+        set_gross_delta_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
     }
 
     void set_default_gross_delta_limit(double limit) {
-        gross_delta_limits_.set_default_limit(limit);
-    }
-
-    void set_gross_delta_comparison_mode(LimitComparisonMode mode) {
-        gross_delta_limits_.set_comparison_mode(mode);
+        set_default_gross_delta_limit_internal(limit);
     }
 
     double get_gross_delta_limit(const std::string& underlyer) const {
-        return gross_delta_limits_.get_limit(underlyer);
+        return get_gross_delta_limit_internal(aggregation::UnderlyerKey{underlyer});
     }
 
+    // Net Delta Limits
     void set_net_delta_limit(const std::string& underlyer, double limit) {
-        net_delta_limits_.set_limit(underlyer, limit);
+        set_net_delta_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
     }
 
     void set_default_net_delta_limit(double limit) {
-        net_delta_limits_.set_default_limit(limit);
-    }
-
-    void set_net_delta_comparison_mode(LimitComparisonMode mode) {
-        net_delta_limits_.set_comparison_mode(mode);
+        set_default_net_delta_limit_internal(limit);
     }
 
     double get_net_delta_limit(const std::string& underlyer) const {
-        return net_delta_limits_.get_limit(underlyer);
+        return get_net_delta_limit_internal(aggregation::UnderlyerKey{underlyer});
     }
 
-    // ========================================================================
-    // Notional Limits (requires NotionalMetrics<Provider>)
-    // ========================================================================
-
+    // Strategy Notional Limits
     void set_strategy_notional_limit(const std::string& strategy_id, double limit) {
-        strategy_notional_limits_.set_limit(strategy_id, limit);
+        set_strategy_notional_limit_internal(aggregation::StrategyKey{strategy_id}, limit);
     }
 
     void set_default_strategy_notional_limit(double limit) {
-        strategy_notional_limits_.set_default_limit(limit);
+        set_default_strategy_notional_limit_internal(limit);
     }
 
     double get_strategy_notional_limit(const std::string& strategy_id) const {
-        return strategy_notional_limits_.get_limit(strategy_id);
+        return get_strategy_notional_limit_internal(aggregation::StrategyKey{strategy_id});
     }
 
+    // Portfolio Notional Limits
     void set_portfolio_notional_limit(const std::string& portfolio_id, double limit) {
-        portfolio_notional_limits_.set_limit(portfolio_id, limit);
+        set_portfolio_notional_limit_internal(aggregation::PortfolioKey{portfolio_id}, limit);
     }
 
     void set_default_portfolio_notional_limit(double limit) {
-        portfolio_notional_limits_.set_default_limit(limit);
+        set_default_portfolio_notional_limit_internal(limit);
     }
 
     double get_portfolio_notional_limit(const std::string& portfolio_id) const {
-        return portfolio_notional_limits_.get_limit(portfolio_id);
+        return get_portfolio_notional_limit_internal(aggregation::PortfolioKey{portfolio_id});
     }
 
+    // Global Notional Limits
     void set_global_notional_limit(double limit) {
-        global_notional_limits_.set_limit("", limit);
+        set_global_notional_limit_internal(limit);
     }
 
     double get_global_notional_limit() const {
-        return global_notional_limits_.get_limit("");
+        return get_global_notional_limit_internal();
     }
 
     // ========================================================================
@@ -254,363 +281,431 @@ public:
     // Returns a structured result with all breaches
     PreTradeCheckResult pre_trade_check(const fix::NewOrderSingle& order) const {
         PreTradeCheckResult result;
-
-        // Check each limit type (SFINAE-enabled based on metrics present)
-        check_order_count_limits(order, result);
-        check_quoted_instruments_limits(order, result);
-        check_delta_limits(order, result);
-        check_notional_limits(order, result);
-
+        check_all_limits<Metrics...>(order, result);
         return result;
     }
 
 private:
-    // Helper to create composite key for order count limits
-    static std::string make_order_count_key(const std::string& symbol, fix::Side side) {
-        return symbol + ":" + std::to_string(static_cast<int>(side));
+    // ========================================================================
+    // Internal limit setters/getters for backward compatibility
+    // ========================================================================
+
+    // Order count limits - find the InstrumentSideKey metric
+    template<typename Metric = void>
+    void set_order_count_limit_internal(const aggregation::InstrumentSideKey& key, double limit) {
+        set_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_order_count_limit_internal(double limit) {
+        set_default_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_order_count_limit_internal(const aggregation::InstrumentSideKey& key) const {
+        return get_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(key);
+    }
+
+    // Quoted instruments limits - find the UnderlyerKey metric (QuotedInstrumentCountMetric)
+    template<typename Metric = void>
+    void set_quoted_instruments_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
+        set_quoted_instrument_limit_impl<Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_quoted_instruments_limit_internal(double limit) {
+        set_default_quoted_instrument_limit_impl<Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_quoted_instruments_limit_internal(const aggregation::UnderlyerKey& key) const {
+        return get_quoted_instrument_limit_impl<Metrics...>(key);
+    }
+
+    // Gross delta limits
+    template<typename Metric = void>
+    void set_gross_delta_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
+        set_gross_delta_limit_impl<Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_gross_delta_limit_internal(double limit) {
+        set_default_gross_delta_limit_impl<Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_gross_delta_limit_internal(const aggregation::UnderlyerKey& key) const {
+        return get_gross_delta_limit_impl<Metrics...>(key);
+    }
+
+    // Net delta limits
+    template<typename Metric = void>
+    void set_net_delta_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
+        set_net_delta_limit_impl<Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_net_delta_limit_internal(double limit) {
+        set_default_net_delta_limit_impl<Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_net_delta_limit_internal(const aggregation::UnderlyerKey& key) const {
+        return get_net_delta_limit_impl<Metrics...>(key);
+    }
+
+    // Strategy notional limits
+    template<typename Metric = void>
+    void set_strategy_notional_limit_internal(const aggregation::StrategyKey& key, double limit) {
+        set_limit_for_key_type<aggregation::StrategyKey, Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_strategy_notional_limit_internal(double limit) {
+        set_default_limit_for_key_type<aggregation::StrategyKey, Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_strategy_notional_limit_internal(const aggregation::StrategyKey& key) const {
+        return get_limit_for_key_type<aggregation::StrategyKey, Metrics...>(key);
+    }
+
+    // Portfolio notional limits
+    template<typename Metric = void>
+    void set_portfolio_notional_limit_internal(const aggregation::PortfolioKey& key, double limit) {
+        set_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(key, limit);
+    }
+
+    template<typename Metric = void>
+    void set_default_portfolio_notional_limit_internal(double limit) {
+        set_default_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(limit);
+    }
+
+    template<typename Metric = void>
+    double get_portfolio_notional_limit_internal(const aggregation::PortfolioKey& key) const {
+        return get_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(key);
+    }
+
+    // Global notional limits
+    template<typename Metric = void>
+    void set_global_notional_limit_internal(double limit) {
+        set_limit_for_key_type<aggregation::GlobalKey, Metrics...>(aggregation::GlobalKey::instance(), limit);
+    }
+
+    template<typename Metric = void>
+    double get_global_notional_limit_internal() const {
+        return get_limit_for_key_type<aggregation::GlobalKey, Metrics...>(aggregation::GlobalKey::instance());
     }
 
     // ========================================================================
-    // Type traits for metric key detection
+    // Generic limit access by key type
     // ========================================================================
 
-    // Check if a metric type has InstrumentSideKey as its key_type
-    template<typename T, typename = void>
-    struct is_instrument_side_metric : std::false_type {};
-
-    template<typename T>
-    struct is_instrument_side_metric<T, std::void_t<typename T::key_type>>
-        : std::bool_constant<std::is_same_v<typename T::key_type, aggregation::InstrumentSideKey>> {};
-
-    template<typename T>
-    static constexpr bool is_instrument_side_metric_v = is_instrument_side_metric<T>::value;
-
-    // ========================================================================
-    // Order Count Limit Check Helpers
-    // ========================================================================
-
-    // Helper to get order count from one metric (returns 0 if not applicable)
-    template<typename Metric>
-    int64_t get_order_count_contribution(const aggregation::InstrumentSideKey& key) const {
-        if constexpr (is_order_count_metric_v<Metric> && is_instrument_side_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(key);
+    // Set limit for ALL metrics with matching key type
+    template<typename KeyType, typename First, typename... Rest>
+    void set_limit_for_key_type(const KeyType& key, double limit) {
+        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
+            limits_.template get<First>().set_limit(key, limit);
         }
-        return 0;
-    }
-
-    // Sum order counts across all metrics using fold expression
-    int64_t total_instrument_side_order_count(const aggregation::InstrumentSideKey& key) const {
-        return (get_order_count_contribution<Metrics>(key) + ...);
-    }
-
-    void check_order_count_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
-        if constexpr (has_order_count_metric_v<Metrics...>) {
-            std::string limit_key = make_order_count_key(order.symbol, order.side);
-
-            // Get current count by summing from all applicable metrics
-            aggregation::InstrumentSideKey count_key{order.symbol, static_cast<int>(order.side)};
-            int64_t current = total_instrument_side_order_count(count_key);
-
-            double limit = order_count_limits_.get_limit(limit_key);
-            double hypothetical = static_cast<double>(current + 1);
-
-            // Order count uses >= for breach (at_or_above_limit)
-            if (hypothetical > limit) {
-                result.add_breach({
-                    LimitType::ORDER_COUNT,
-                    limit_key,
-                    limit,
-                    static_cast<double>(current),
-                    hypothetical
-                });
-            }
+        if constexpr (sizeof...(Rest) > 0) {
+            set_limit_for_key_type<KeyType, Rest...>(key, limit);
         }
     }
 
+    template<typename KeyType>
+    void set_limit_for_key_type(const KeyType&, double) {
+        // No matching metric - no-op
+    }
+
+    // Set default limit for ALL metrics with matching key type
+    template<typename KeyType, typename First, typename... Rest>
+    void set_default_limit_for_key_type(double limit) {
+        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
+            limits_.template get<First>().set_default_limit(limit);
+        }
+        if constexpr (sizeof...(Rest) > 0) {
+            set_default_limit_for_key_type<KeyType, Rest...>(limit);
+        }
+    }
+
+    template<typename KeyType>
+    void set_default_limit_for_key_type(double) {
+        // No matching metric - no-op
+    }
+
+    // Get limit for the first metric with matching key type
+    template<typename KeyType, typename First, typename... Rest>
+    double get_limit_for_key_type(const KeyType& key) const {
+        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
+            return limits_.template get<First>().get_limit(key);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            return get_limit_for_key_type<KeyType, Rest...>(key);
+        } else {
+            return std::numeric_limits<double>::max();
+        }
+    }
+
+    template<typename KeyType>
+    double get_limit_for_key_type(const KeyType&) const {
+        return std::numeric_limits<double>::max();
+    }
+
     // ========================================================================
-    // Quoted Instruments Limit Check Helpers
+    // Special implementations for metrics with specific traits
     // ========================================================================
 
-    // Trait to detect QuotedInstrumentCountMetric
+    // Quoted instrument metric detection
     template<typename T>
     struct is_quoted_instrument_metric : std::false_type {};
 
     template<typename... Stages>
     struct is_quoted_instrument_metric<metrics::QuotedInstrumentCountMetric<Stages...>> : std::true_type {};
 
-    template<typename T>
-    static constexpr bool is_quoted_instrument_metric_v = is_quoted_instrument_metric<T>::value;
-
-    // Check if any metric in the pack is a QuotedInstrumentCountMetric
-    static constexpr bool has_quoted_instrument_metric_v = (is_quoted_instrument_metric_v<Metrics> || ...);
-
-    // Helper to get quoted instrument count from one metric
-    template<typename Metric>
-    int64_t get_quoted_count_contribution(const aggregation::UnderlyerKey& key) const {
-        if constexpr (is_quoted_instrument_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(key);
+    template<typename First, typename... Rest>
+    void set_quoted_instrument_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
+        if constexpr (is_quoted_instrument_metric<First>::value) {
+            limits_.template get<First>().set_limit(key, limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_quoted_instrument_limit_impl<Rest...>(key, limit);
         }
-        return 0;
     }
 
-    // Sum quoted instrument counts across all metrics
-    int64_t total_quoted_instruments(const aggregation::UnderlyerKey& key) const {
-        return (get_quoted_count_contribution<Metrics>(key) + ...);
+    void set_quoted_instrument_limit_impl(const aggregation::UnderlyerKey&, double) {}
+
+    template<typename First, typename... Rest>
+    void set_default_quoted_instrument_limit_impl(double limit) {
+        if constexpr (is_quoted_instrument_metric<First>::value) {
+            limits_.template get<First>().set_default_limit(limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_default_quoted_instrument_limit_impl<Rest...>(limit);
+        }
     }
 
-    // Check if instrument is already quoted by summing order counts for that symbol
+    void set_default_quoted_instrument_limit_impl(double) {}
+
+    template<typename First, typename... Rest>
+    double get_quoted_instrument_limit_impl(const aggregation::UnderlyerKey& key) const {
+        if constexpr (is_quoted_instrument_metric<First>::value) {
+            return limits_.template get<First>().get_limit(key);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            return get_quoted_instrument_limit_impl<Rest...>(key);
+        } else {
+            return std::numeric_limits<double>::max();
+        }
+    }
+
+    double get_quoted_instrument_limit_impl(const aggregation::UnderlyerKey&) const {
+        return std::numeric_limits<double>::max();
+    }
+
+    // Gross delta metric detection
+    template<typename T>
+    struct is_gross_delta_metric : std::false_type {};
+
+    template<typename Key, typename P, typename... Stages>
+    struct is_gross_delta_metric<metrics::GrossDeltaMetric<Key, P, Stages...>> : std::true_type {};
+
+    template<typename First, typename... Rest>
+    void set_gross_delta_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
+        if constexpr (is_gross_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            limits_.template get<First>().set_limit(key, limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_gross_delta_limit_impl<Rest...>(key, limit);
+        }
+    }
+
+    void set_gross_delta_limit_impl(const aggregation::UnderlyerKey&, double) {}
+
+    template<typename First, typename... Rest>
+    void set_default_gross_delta_limit_impl(double limit) {
+        if constexpr (is_gross_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            limits_.template get<First>().set_default_limit(limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_default_gross_delta_limit_impl<Rest...>(limit);
+        }
+    }
+
+    void set_default_gross_delta_limit_impl(double) {}
+
+    template<typename First, typename... Rest>
+    double get_gross_delta_limit_impl(const aggregation::UnderlyerKey& key) const {
+        if constexpr (is_gross_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            return limits_.template get<First>().get_limit(key);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            return get_gross_delta_limit_impl<Rest...>(key);
+        } else {
+            return std::numeric_limits<double>::max();
+        }
+    }
+
+    double get_gross_delta_limit_impl(const aggregation::UnderlyerKey&) const {
+        return std::numeric_limits<double>::max();
+    }
+
+    // Net delta metric detection
+    template<typename T>
+    struct is_net_delta_metric : std::false_type {};
+
+    template<typename Key, typename P, typename... Stages>
+    struct is_net_delta_metric<metrics::NetDeltaMetric<Key, P, Stages...>> : std::true_type {};
+
+    template<typename First, typename... Rest>
+    void set_net_delta_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
+        if constexpr (is_net_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            limits_.template get<First>().set_limit(key, limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_net_delta_limit_impl<Rest...>(key, limit);
+        }
+    }
+
+    void set_net_delta_limit_impl(const aggregation::UnderlyerKey&, double) {}
+
+    template<typename First, typename... Rest>
+    void set_default_net_delta_limit_impl(double limit) {
+        if constexpr (is_net_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            limits_.template get<First>().set_default_limit(limit);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            set_default_net_delta_limit_impl<Rest...>(limit);
+        }
+    }
+
+    void set_default_net_delta_limit_impl(double) {}
+
+    template<typename First, typename... Rest>
+    double get_net_delta_limit_impl(const aggregation::UnderlyerKey& key) const {
+        if constexpr (is_net_delta_metric<First>::value &&
+                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
+            return limits_.template get<First>().get_limit(key);
+        } else if constexpr (sizeof...(Rest) > 0) {
+            return get_net_delta_limit_impl<Rest...>(key);
+        } else {
+            return std::numeric_limits<double>::max();
+        }
+    }
+
+    double get_net_delta_limit_impl(const aggregation::UnderlyerKey&) const {
+        return std::numeric_limits<double>::max();
+    }
+
+    // ========================================================================
+    // Generic Pre-Trade Check Implementation
+    // ========================================================================
+
+    template<typename First, typename... Rest>
+    void check_all_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+        check_metric_limit<First>(order, result);
+        if constexpr (sizeof...(Rest) > 0) {
+            check_all_limits<Rest...>(order, result);
+        }
+    }
+
+    // Base case for empty pack
+    void check_all_limits(const fix::NewOrderSingle&, PreTradeCheckResult&) const {}
+
+    // Check limit for a single metric
+    template<typename Metric>
+    void check_metric_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+        // Special handling for QuotedInstrumentCountMetric
+        if constexpr (is_quoted_instrument_metric<Metric>::value) {
+            check_quoted_instrument_limit<Metric>(order, result);
+        } else {
+            check_standard_limit<Metric>(order, result);
+        }
+    }
+
+    // Helper to get provider pointer with correct type
+    template<typename P = Provider>
+    static constexpr std::enable_if_t<!std::is_void_v<P>, const P*>
+    get_provider_ptr_impl(const P* p) { return p; }
+
+    template<typename P = Provider>
+    static constexpr std::enable_if_t<std::is_void_v<P>, const void*>
+    get_provider_ptr_impl(std::nullptr_t) { return nullptr; }
+
+    auto get_provider_ptr() const {
+        if constexpr (std::is_void_v<Provider>) {
+            return static_cast<const void*>(nullptr);
+        } else {
+            return instrument_provider();
+        }
+    }
+
+    // Standard limit check for metrics with compute_order_contribution
+    template<typename Metric>
+    void check_standard_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+        auto key = Metric::extract_key(order);
+        auto contribution = Metric::compute_order_contribution(order, get_provider_ptr());
+        auto current = static_cast<double>(engine_.template get_metric<Metric>().get(key));
+
+        const auto& store = limits_.template get<Metric>();
+        double limit = store.get_limit(key);
+        double hypothetical = current + static_cast<double>(contribution);
+
+        if (store.would_breach(key, current, static_cast<double>(contribution))) {
+            result.add_breach({
+                Metric::limit_type(),
+                detail::key_to_string(key),
+                limit,
+                current,
+                hypothetical
+            });
+        }
+    }
+
+    // Special limit check for QuotedInstrumentCountMetric
+    template<typename Metric>
+    void check_quoted_instrument_limit(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
+        // Check if instrument already has orders - if so, won't increase quoted count
+        if (is_instrument_already_quoted(order.symbol)) {
+            return;
+        }
+
+        auto key = Metric::extract_key(order);
+        auto contribution = Metric::compute_order_contribution(order, get_provider_ptr());
+        auto current = static_cast<double>(engine_.template get_metric<Metric>().get(key));
+
+        const auto& store = limits_.template get<Metric>();
+        double limit = store.get_limit(key);
+        double hypothetical = current + static_cast<double>(contribution);
+
+        if (store.would_breach(key, current, static_cast<double>(contribution))) {
+            result.add_breach({
+                Metric::limit_type(),
+                detail::key_to_string(key),
+                limit,
+                current,
+                hypothetical
+            });
+        }
+    }
+
+    // Check if instrument is already quoted by checking order counts
     bool is_instrument_already_quoted(const std::string& symbol) const {
-        if constexpr (has_order_count_metric_v<Metrics...>) {
+        return is_instrument_quoted_impl<Metrics...>(symbol);
+    }
+
+    template<typename First, typename... Rest>
+    bool is_instrument_quoted_impl(const std::string& symbol) const {
+        if constexpr (std::is_same_v<typename First::key_type, aggregation::InstrumentSideKey>) {
             aggregation::InstrumentSideKey bid_key{symbol, static_cast<int>(fix::Side::BID)};
             aggregation::InstrumentSideKey ask_key{symbol, static_cast<int>(fix::Side::ASK)};
-            return (total_instrument_side_order_count(bid_key) +
-                    total_instrument_side_order_count(ask_key)) > 0;
+            auto count = engine_.template get_metric<First>().get(bid_key) +
+                        engine_.template get_metric<First>().get(ask_key);
+            if (count > 0) return true;
+        }
+        if constexpr (sizeof...(Rest) > 0) {
+            return is_instrument_quoted_impl<Rest...>(symbol);
         }
         return false;
     }
 
-    void check_quoted_instruments_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
-        if constexpr (has_quoted_instrument_metric_v) {
-            // If instrument already has orders, adding more won't increase the quoted count
-            if (is_instrument_already_quoted(order.symbol)) {
-                return;
-            }
-
-            aggregation::UnderlyerKey underlyer_key{order.underlyer};
-            int64_t current = total_quoted_instruments(underlyer_key);
-            double limit = quoted_instruments_limits_.get_limit(order.underlyer);
-            double hypothetical = static_cast<double>(current + 1);
-
-            // Quoted instruments uses >= for breach
-            if (hypothetical > limit) {
-                result.add_breach({
-                    LimitType::QUOTED_INSTRUMENTS,
-                    order.underlyer,
-                    limit,
-                    static_cast<double>(current),
-                    hypothetical
-                });
-            }
-        }
-    }
-
-    // ========================================================================
-    // Delta Limit Check Helpers
-    // ========================================================================
-
-    // Check if a metric type has UnderlyerKey as its key_type
-    template<typename T, typename = void>
-    struct is_underlyer_key_metric : std::false_type {};
-
-    template<typename T>
-    struct is_underlyer_key_metric<T, std::void_t<typename T::key_type>>
-        : std::bool_constant<std::is_same_v<typename T::key_type, aggregation::UnderlyerKey>> {};
-
-    template<typename T>
-    static constexpr bool is_underlyer_key_metric_v = is_underlyer_key_metric<T>::value;
-
-    // Helper to get delta from one metric (returns {0,0} if not applicable)
-    template<typename Metric>
-    aggregation::DeltaValue get_underlyer_delta_contribution(const aggregation::UnderlyerKey& key) const {
-        if constexpr (is_delta_metric_v<Metric> && is_underlyer_key_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(key);
-        }
-        return aggregation::DeltaValue{0.0, 0.0};
-    }
-
-    // Sum deltas across all metrics using fold expression
-    aggregation::DeltaValue total_underlyer_delta(const aggregation::UnderlyerKey& key) const {
-        aggregation::DeltaValue total{0.0, 0.0};
-        ((total.gross += get_underlyer_delta_contribution<Metrics>(key).gross,
-          total.net += get_underlyer_delta_contribution<Metrics>(key).net), ...);
-        return total;
-    }
-
-    void check_delta_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
-        if constexpr (has_delta_metric_v<Metrics...>) {
-            // Compute delta exposure for this order
-            const auto* provider = instrument_provider();
-            if (!provider) return;
-
-            double delta_exp = provider->get_delta(order.symbol) * static_cast<double>(order.quantity);
-            double gross_add = std::abs(delta_exp);
-            double net_add = (order.side == fix::Side::BID) ? delta_exp : -delta_exp;
-
-            // Get current delta values from underlyer delta metrics
-            aggregation::UnderlyerKey underlyer_key{order.underlyer};
-            auto current_delta = total_underlyer_delta(underlyer_key);
-
-            // Check gross delta limit
-            double gross_limit = gross_delta_limits_.get_limit(order.underlyer);
-            double hypothetical_gross = current_delta.gross + gross_add;
-
-            if (gross_delta_limits_.would_breach(order.underlyer, current_delta.gross, gross_add)) {
-                result.add_breach({
-                    LimitType::GROSS_DELTA,
-                    order.underlyer,
-                    gross_limit,
-                    current_delta.gross,
-                    hypothetical_gross
-                });
-            }
-
-            // Check net delta limit
-            double net_limit = net_delta_limits_.get_limit(order.underlyer);
-            double hypothetical_net = current_delta.net + net_add;
-
-            if (net_delta_limits_.would_breach(order.underlyer, current_delta.net, net_add)) {
-                result.add_breach({
-                    LimitType::NET_DELTA,
-                    order.underlyer,
-                    net_limit,
-                    current_delta.net,
-                    hypothetical_net
-                });
-            }
-        }
-    }
-
-    // ========================================================================
-    // Notional Limit Check Helpers
-    // ========================================================================
-
-    // Check if a metric type has GlobalKey as its key_type
-    template<typename T, typename = void>
-    struct is_global_key_metric : std::false_type {};
-
-    template<typename T>
-    struct is_global_key_metric<T, std::void_t<typename T::key_type>>
-        : std::bool_constant<std::is_same_v<typename T::key_type, aggregation::GlobalKey>> {};
-
-    template<typename T>
-    static constexpr bool is_global_key_metric_v = is_global_key_metric<T>::value;
-
-    // Check if a metric type has StrategyKey as its key_type
-    template<typename T, typename = void>
-    struct is_strategy_key_metric : std::false_type {};
-
-    template<typename T>
-    struct is_strategy_key_metric<T, std::void_t<typename T::key_type>>
-        : std::bool_constant<std::is_same_v<typename T::key_type, aggregation::StrategyKey>> {};
-
-    template<typename T>
-    static constexpr bool is_strategy_key_metric_v = is_strategy_key_metric<T>::value;
-
-    // Check if a metric type has PortfolioKey as its key_type
-    template<typename T, typename = void>
-    struct is_portfolio_key_metric : std::false_type {};
-
-    template<typename T>
-    struct is_portfolio_key_metric<T, std::void_t<typename T::key_type>>
-        : std::bool_constant<std::is_same_v<typename T::key_type, aggregation::PortfolioKey>> {};
-
-    template<typename T>
-    static constexpr bool is_portfolio_key_metric_v = is_portfolio_key_metric<T>::value;
-
-    // Helper to get global notional from one metric
-    template<typename Metric>
-    double get_global_notional_contribution() const {
-        if constexpr (is_notional_metric_v<Metric> && is_global_key_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(aggregation::GlobalKey::instance());
-        }
-        return 0.0;
-    }
-
-    // Sum global notional across all metrics
-    double total_global_notional() const {
-        return (get_global_notional_contribution<Metrics>() + ...);
-    }
-
-    // Helper to get strategy notional from one metric
-    template<typename Metric>
-    double get_strategy_notional_contribution(const aggregation::StrategyKey& key) const {
-        if constexpr (is_notional_metric_v<Metric> && is_strategy_key_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(key);
-        }
-        return 0.0;
-    }
-
-    // Sum strategy notional across all metrics
-    double total_strategy_notional(const aggregation::StrategyKey& key) const {
-        return (get_strategy_notional_contribution<Metrics>(key) + ...);
-    }
-
-    // Helper to get portfolio notional from one metric
-    template<typename Metric>
-    double get_portfolio_notional_contribution(const aggregation::PortfolioKey& key) const {
-        if constexpr (is_notional_metric_v<Metric> && is_portfolio_key_metric_v<Metric>) {
-            return engine_.template get_metric<Metric>().get(key);
-        }
-        return 0.0;
-    }
-
-    // Sum portfolio notional across all metrics
-    double total_portfolio_notional(const aggregation::PortfolioKey& key) const {
-        return (get_portfolio_notional_contribution<Metrics>(key) + ...);
-    }
-
-    void check_notional_limits(const fix::NewOrderSingle& order, PreTradeCheckResult& result) const {
-        if constexpr (has_notional_metric_v<Metrics...>) {
-            // Compute notional for this order
-            const auto* provider = instrument_provider();
-            if (!provider) return;
-
-            double notional = static_cast<double>(order.quantity) *
-                             provider->get_spot_price(order.symbol) *
-                             provider->get_contract_size(order.symbol) *
-                             provider->get_fx_rate(order.symbol);
-
-            // Check global notional limit
-            double current_global = total_global_notional();
-            double global_limit = global_notional_limits_.get_limit("");
-            double hypothetical_global = current_global + notional;
-
-            if (global_notional_limits_.would_breach("", current_global, notional)) {
-                result.add_breach({
-                    LimitType::GLOBAL_NOTIONAL,
-                    "global",
-                    global_limit,
-                    current_global,
-                    hypothetical_global
-                });
-            }
-
-            // Check strategy notional limit
-            if (!order.strategy_id.empty()) {
-                aggregation::StrategyKey strategy_key{order.strategy_id};
-                double current_strategy = total_strategy_notional(strategy_key);
-                double strategy_limit = strategy_notional_limits_.get_limit(order.strategy_id);
-                double hypothetical_strategy = current_strategy + notional;
-
-                if (strategy_notional_limits_.would_breach(order.strategy_id, current_strategy, notional)) {
-                    result.add_breach({
-                        LimitType::STRATEGY_NOTIONAL,
-                        order.strategy_id,
-                        strategy_limit,
-                        current_strategy,
-                        hypothetical_strategy
-                    });
-                }
-            }
-
-            // Check portfolio notional limit
-            if (!order.portfolio_id.empty()) {
-                aggregation::PortfolioKey portfolio_key{order.portfolio_id};
-                double current_portfolio = total_portfolio_notional(portfolio_key);
-                double portfolio_limit = portfolio_notional_limits_.get_limit(order.portfolio_id);
-                double hypothetical_portfolio = current_portfolio + notional;
-
-                if (portfolio_notional_limits_.would_breach(order.portfolio_id, current_portfolio, notional)) {
-                    result.add_breach({
-                        LimitType::PORTFOLIO_NOTIONAL,
-                        order.portfolio_id,
-                        portfolio_limit,
-                        current_portfolio,
-                        hypothetical_portfolio
-                    });
-                }
-            }
-        }
+    bool is_instrument_quoted_impl(const std::string&) const {
+        return false;
     }
 };
 
@@ -620,27 +715,27 @@ private:
 
 using DefaultProvider = instrument::StaticInstrumentProvider;
 
-// Standard engine with all metrics and limits (using AllStages)
-using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithLimits<
-    DefaultProvider,
-    metrics::DeltaMetrics<DefaultProvider, aggregation::AllStages>,
-    metrics::OrderCountMetrics<aggregation::AllStages>,
-    metrics::NotionalMetrics<DefaultProvider, aggregation::AllStages>
->;
-
-// Order count only with limits (useful for quoted instrument limits)
-using OrderCountEngineWithLimits = RiskAggregationEngineWithLimits<
-    DefaultProvider,
-    metrics::OrderCountMetrics<aggregation::AllStages>
->;
-
-// Template alias for custom provider types
+// Template alias for custom provider types with new metric structure
 template<typename Provider>
 using RiskAggregationEngineWithAllLimitsUsing = RiskAggregationEngineWithLimits<
     Provider,
-    metrics::DeltaMetrics<Provider, aggregation::AllStages>,
-    metrics::OrderCountMetrics<aggregation::AllStages>,
-    metrics::NotionalMetrics<Provider, aggregation::AllStages>
+    metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
+    metrics::NetDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
+    metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>,
+    metrics::QuotedInstrumentCountMetric<aggregation::AllStages>,
+    metrics::NotionalMetric<aggregation::GlobalKey, Provider, aggregation::AllStages>,
+    metrics::NotionalMetric<aggregation::StrategyKey, Provider, aggregation::AllStages>,
+    metrics::NotionalMetric<aggregation::PortfolioKey, Provider, aggregation::AllStages>
+>;
+
+// Standard engine with all metrics and limits (using AllStages)
+using RiskAggregationEngineWithAllLimits = RiskAggregationEngineWithAllLimitsUsing<DefaultProvider>;
+
+// Order count only with limits (useful for quoted instrument limits)
+using OrderCountEngineWithLimits = RiskAggregationEngineWithLimits<
+    void,
+    metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>,
+    metrics::QuotedInstrumentCountMetric<aggregation::AllStages>
 >;
 
 } // namespace engine
