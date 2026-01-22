@@ -123,8 +123,9 @@ protected:
     static constexpr int64_t MAX_IN_FLIGHT_PER_SIDE = 1;
 
     void SetUp() override {
-        // Configure the order count limit
-        engine.set_default_order_count_limit(MAX_OPEN_PER_SIDE);
+        // Configure the order count limit for both open and in-flight metrics
+        engine.set_default_limit<OpenOrderCount>(MAX_OPEN_PER_SIDE);
+        engine.set_default_limit<InFlightOrderCount>(MAX_IN_FLIGHT_PER_SIDE);
     }
 
     // Helper to get counts

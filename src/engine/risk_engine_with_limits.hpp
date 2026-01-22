@@ -18,7 +18,7 @@ namespace engine {
 // and breach checking capabilities.
 //
 // Template parameters:
-//   - Provider: The InstrumentProvider type
+//   - Provider: The InstrumentProvider type (use void for metrics that don't need a provider)
 //   - Metrics...: Zero or more metric types
 //
 // Each metric type must have:
@@ -36,14 +36,14 @@ namespace engine {
 //
 // Example usage:
 //   using Provider = instrument::StaticInstrumentProvider;
-//   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider,
-//       metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
-//       metrics::NetDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>,
-//       metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>>;
+//   using GrossDelta = metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>;
+//   using OrderCount = metrics::OrderCountMetric<aggregation::InstrumentSideKey, aggregation::AllStages>;
+//
+//   using EngineWithLimits = RiskAggregationEngineWithLimits<Provider, GrossDelta, OrderCount>;
 //
 //   EngineWithLimits engine(&provider);
-//   engine.set_limit<metrics::GrossDeltaMetric<aggregation::UnderlyerKey, Provider, aggregation::AllStages>>(
-//       aggregation::UnderlyerKey{"AAPL"}, 10000.0);
+//   engine.set_limit<GrossDelta>(aggregation::UnderlyerKey{"AAPL"}, 10000.0);
+//   engine.set_default_limit<OrderCount>(50.0);
 //   auto result = engine.pre_trade_check(order);
 //
 
@@ -52,11 +52,6 @@ class RiskAggregationEngineWithLimits {
 private:
     GenericRiskAggregationEngine<Provider, Metrics...> engine_;
     MetricLimitStores<Metrics...> limits_;
-
-    // Type aliases for finding the correct metric types
-    using OrderCountMetricType = order_count_metric_t<Metrics...>;
-    using DeltaMetricType = delta_metric_t<Metrics...>;
-    using NotionalMetricType = notional_metric_t<Metrics...>;
 
 public:
     using provider_type = Provider;
@@ -180,101 +175,7 @@ public:
     }
 
     // ========================================================================
-    // Backward-compatible Limit API (delegates to generic API)
-    // ========================================================================
-
-    // Order Count Limits (per instrument-side)
-    void set_order_count_limit(const std::string& symbol, fix::Side side, int64_t limit) {
-        set_order_count_limit_internal(
-            aggregation::InstrumentSideKey{symbol, static_cast<int>(side)},
-            static_cast<double>(limit));
-    }
-
-    void set_default_order_count_limit(int64_t limit) {
-        set_default_order_count_limit_internal(static_cast<double>(limit));
-    }
-
-    double get_order_count_limit(const std::string& symbol, fix::Side side) const {
-        return get_order_count_limit_internal(
-            aggregation::InstrumentSideKey{symbol, static_cast<int>(side)});
-    }
-
-    // Quoted Instruments Limits
-    void set_quoted_instruments_limit(const std::string& underlyer, double limit) {
-        set_quoted_instruments_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
-    }
-
-    void set_default_quoted_instruments_limit(double limit) {
-        set_default_quoted_instruments_limit_internal(limit);
-    }
-
-    double get_quoted_instruments_limit(const std::string& underlyer) const {
-        return get_quoted_instruments_limit_internal(aggregation::UnderlyerKey{underlyer});
-    }
-
-    // Gross Delta Limits
-    void set_gross_delta_limit(const std::string& underlyer, double limit) {
-        set_gross_delta_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
-    }
-
-    void set_default_gross_delta_limit(double limit) {
-        set_default_gross_delta_limit_internal(limit);
-    }
-
-    double get_gross_delta_limit(const std::string& underlyer) const {
-        return get_gross_delta_limit_internal(aggregation::UnderlyerKey{underlyer});
-    }
-
-    // Net Delta Limits
-    void set_net_delta_limit(const std::string& underlyer, double limit) {
-        set_net_delta_limit_internal(aggregation::UnderlyerKey{underlyer}, limit);
-    }
-
-    void set_default_net_delta_limit(double limit) {
-        set_default_net_delta_limit_internal(limit);
-    }
-
-    double get_net_delta_limit(const std::string& underlyer) const {
-        return get_net_delta_limit_internal(aggregation::UnderlyerKey{underlyer});
-    }
-
-    // Strategy Notional Limits
-    void set_strategy_notional_limit(const std::string& strategy_id, double limit) {
-        set_strategy_notional_limit_internal(aggregation::StrategyKey{strategy_id}, limit);
-    }
-
-    void set_default_strategy_notional_limit(double limit) {
-        set_default_strategy_notional_limit_internal(limit);
-    }
-
-    double get_strategy_notional_limit(const std::string& strategy_id) const {
-        return get_strategy_notional_limit_internal(aggregation::StrategyKey{strategy_id});
-    }
-
-    // Portfolio Notional Limits
-    void set_portfolio_notional_limit(const std::string& portfolio_id, double limit) {
-        set_portfolio_notional_limit_internal(aggregation::PortfolioKey{portfolio_id}, limit);
-    }
-
-    void set_default_portfolio_notional_limit(double limit) {
-        set_default_portfolio_notional_limit_internal(limit);
-    }
-
-    double get_portfolio_notional_limit(const std::string& portfolio_id) const {
-        return get_portfolio_notional_limit_internal(aggregation::PortfolioKey{portfolio_id});
-    }
-
-    // Global Notional Limits
-    void set_global_notional_limit(double limit) {
-        set_global_notional_limit_internal(limit);
-    }
-
-    double get_global_notional_limit() const {
-        return get_global_notional_limit_internal();
-    }
-
-    // ========================================================================
-    // Unified Pre-Trade Check
+    // Pre-Trade Check
     // ========================================================================
 
     // Check if an order would breach any configured limits
@@ -287,313 +188,17 @@ public:
 
 private:
     // ========================================================================
-    // Internal limit setters/getters for backward compatibility
+    // Metric type detection traits
     // ========================================================================
 
-    // Order count limits - find the InstrumentSideKey metric
-    template<typename Metric = void>
-    void set_order_count_limit_internal(const aggregation::InstrumentSideKey& key, double limit) {
-        set_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_order_count_limit_internal(double limit) {
-        set_default_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_order_count_limit_internal(const aggregation::InstrumentSideKey& key) const {
-        return get_limit_for_key_type<aggregation::InstrumentSideKey, Metrics...>(key);
-    }
-
-    // Quoted instruments limits - find the UnderlyerKey metric (QuotedInstrumentCountMetric)
-    template<typename Metric = void>
-    void set_quoted_instruments_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
-        set_quoted_instrument_limit_impl<Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_quoted_instruments_limit_internal(double limit) {
-        set_default_quoted_instrument_limit_impl<Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_quoted_instruments_limit_internal(const aggregation::UnderlyerKey& key) const {
-        return get_quoted_instrument_limit_impl<Metrics...>(key);
-    }
-
-    // Gross delta limits
-    template<typename Metric = void>
-    void set_gross_delta_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
-        set_gross_delta_limit_impl<Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_gross_delta_limit_internal(double limit) {
-        set_default_gross_delta_limit_impl<Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_gross_delta_limit_internal(const aggregation::UnderlyerKey& key) const {
-        return get_gross_delta_limit_impl<Metrics...>(key);
-    }
-
-    // Net delta limits
-    template<typename Metric = void>
-    void set_net_delta_limit_internal(const aggregation::UnderlyerKey& key, double limit) {
-        set_net_delta_limit_impl<Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_net_delta_limit_internal(double limit) {
-        set_default_net_delta_limit_impl<Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_net_delta_limit_internal(const aggregation::UnderlyerKey& key) const {
-        return get_net_delta_limit_impl<Metrics...>(key);
-    }
-
-    // Strategy notional limits
-    template<typename Metric = void>
-    void set_strategy_notional_limit_internal(const aggregation::StrategyKey& key, double limit) {
-        set_limit_for_key_type<aggregation::StrategyKey, Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_strategy_notional_limit_internal(double limit) {
-        set_default_limit_for_key_type<aggregation::StrategyKey, Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_strategy_notional_limit_internal(const aggregation::StrategyKey& key) const {
-        return get_limit_for_key_type<aggregation::StrategyKey, Metrics...>(key);
-    }
-
-    // Portfolio notional limits
-    template<typename Metric = void>
-    void set_portfolio_notional_limit_internal(const aggregation::PortfolioKey& key, double limit) {
-        set_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(key, limit);
-    }
-
-    template<typename Metric = void>
-    void set_default_portfolio_notional_limit_internal(double limit) {
-        set_default_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(limit);
-    }
-
-    template<typename Metric = void>
-    double get_portfolio_notional_limit_internal(const aggregation::PortfolioKey& key) const {
-        return get_limit_for_key_type<aggregation::PortfolioKey, Metrics...>(key);
-    }
-
-    // Global notional limits
-    template<typename Metric = void>
-    void set_global_notional_limit_internal(double limit) {
-        set_limit_for_key_type<aggregation::GlobalKey, Metrics...>(aggregation::GlobalKey::instance(), limit);
-    }
-
-    template<typename Metric = void>
-    double get_global_notional_limit_internal() const {
-        return get_limit_for_key_type<aggregation::GlobalKey, Metrics...>(aggregation::GlobalKey::instance());
-    }
-
-    // ========================================================================
-    // Generic limit access by key type
-    // ========================================================================
-
-    // Set limit for ALL metrics with matching key type
-    template<typename KeyType, typename First, typename... Rest>
-    void set_limit_for_key_type(const KeyType& key, double limit) {
-        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
-            limits_.template get<First>().set_limit(key, limit);
-        }
-        if constexpr (sizeof...(Rest) > 0) {
-            set_limit_for_key_type<KeyType, Rest...>(key, limit);
-        }
-    }
-
-    template<typename KeyType>
-    void set_limit_for_key_type(const KeyType&, double) {
-        // No matching metric - no-op
-    }
-
-    // Set default limit for ALL metrics with matching key type
-    template<typename KeyType, typename First, typename... Rest>
-    void set_default_limit_for_key_type(double limit) {
-        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
-            limits_.template get<First>().set_default_limit(limit);
-        }
-        if constexpr (sizeof...(Rest) > 0) {
-            set_default_limit_for_key_type<KeyType, Rest...>(limit);
-        }
-    }
-
-    template<typename KeyType>
-    void set_default_limit_for_key_type(double) {
-        // No matching metric - no-op
-    }
-
-    // Get limit for the first metric with matching key type
-    template<typename KeyType, typename First, typename... Rest>
-    double get_limit_for_key_type(const KeyType& key) const {
-        if constexpr (std::is_same_v<typename First::key_type, KeyType>) {
-            return limits_.template get<First>().get_limit(key);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            return get_limit_for_key_type<KeyType, Rest...>(key);
-        } else {
-            return std::numeric_limits<double>::max();
-        }
-    }
-
-    template<typename KeyType>
-    double get_limit_for_key_type(const KeyType&) const {
-        return std::numeric_limits<double>::max();
-    }
-
-    // ========================================================================
-    // Special implementations for metrics with specific traits
-    // ========================================================================
-
-    // Quoted instrument metric detection
     template<typename T>
     struct is_quoted_instrument_metric : std::false_type {};
 
     template<typename... Stages>
     struct is_quoted_instrument_metric<metrics::QuotedInstrumentCountMetric<Stages...>> : std::true_type {};
 
-    template<typename First, typename... Rest>
-    void set_quoted_instrument_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
-        if constexpr (is_quoted_instrument_metric<First>::value) {
-            limits_.template get<First>().set_limit(key, limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_quoted_instrument_limit_impl<Rest...>(key, limit);
-        }
-    }
-
-    void set_quoted_instrument_limit_impl(const aggregation::UnderlyerKey&, double) {}
-
-    template<typename First, typename... Rest>
-    void set_default_quoted_instrument_limit_impl(double limit) {
-        if constexpr (is_quoted_instrument_metric<First>::value) {
-            limits_.template get<First>().set_default_limit(limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_default_quoted_instrument_limit_impl<Rest...>(limit);
-        }
-    }
-
-    void set_default_quoted_instrument_limit_impl(double) {}
-
-    template<typename First, typename... Rest>
-    double get_quoted_instrument_limit_impl(const aggregation::UnderlyerKey& key) const {
-        if constexpr (is_quoted_instrument_metric<First>::value) {
-            return limits_.template get<First>().get_limit(key);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            return get_quoted_instrument_limit_impl<Rest...>(key);
-        } else {
-            return std::numeric_limits<double>::max();
-        }
-    }
-
-    double get_quoted_instrument_limit_impl(const aggregation::UnderlyerKey&) const {
-        return std::numeric_limits<double>::max();
-    }
-
-    // Gross delta metric detection
-    template<typename T>
-    struct is_gross_delta_metric : std::false_type {};
-
-    template<typename Key, typename P, typename... Stages>
-    struct is_gross_delta_metric<metrics::GrossDeltaMetric<Key, P, Stages...>> : std::true_type {};
-
-    template<typename First, typename... Rest>
-    void set_gross_delta_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
-        if constexpr (is_gross_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            limits_.template get<First>().set_limit(key, limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_gross_delta_limit_impl<Rest...>(key, limit);
-        }
-    }
-
-    void set_gross_delta_limit_impl(const aggregation::UnderlyerKey&, double) {}
-
-    template<typename First, typename... Rest>
-    void set_default_gross_delta_limit_impl(double limit) {
-        if constexpr (is_gross_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            limits_.template get<First>().set_default_limit(limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_default_gross_delta_limit_impl<Rest...>(limit);
-        }
-    }
-
-    void set_default_gross_delta_limit_impl(double) {}
-
-    template<typename First, typename... Rest>
-    double get_gross_delta_limit_impl(const aggregation::UnderlyerKey& key) const {
-        if constexpr (is_gross_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            return limits_.template get<First>().get_limit(key);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            return get_gross_delta_limit_impl<Rest...>(key);
-        } else {
-            return std::numeric_limits<double>::max();
-        }
-    }
-
-    double get_gross_delta_limit_impl(const aggregation::UnderlyerKey&) const {
-        return std::numeric_limits<double>::max();
-    }
-
-    // Net delta metric detection
-    template<typename T>
-    struct is_net_delta_metric : std::false_type {};
-
-    template<typename Key, typename P, typename... Stages>
-    struct is_net_delta_metric<metrics::NetDeltaMetric<Key, P, Stages...>> : std::true_type {};
-
-    template<typename First, typename... Rest>
-    void set_net_delta_limit_impl(const aggregation::UnderlyerKey& key, double limit) {
-        if constexpr (is_net_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            limits_.template get<First>().set_limit(key, limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_net_delta_limit_impl<Rest...>(key, limit);
-        }
-    }
-
-    void set_net_delta_limit_impl(const aggregation::UnderlyerKey&, double) {}
-
-    template<typename First, typename... Rest>
-    void set_default_net_delta_limit_impl(double limit) {
-        if constexpr (is_net_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            limits_.template get<First>().set_default_limit(limit);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            set_default_net_delta_limit_impl<Rest...>(limit);
-        }
-    }
-
-    void set_default_net_delta_limit_impl(double) {}
-
-    template<typename First, typename... Rest>
-    double get_net_delta_limit_impl(const aggregation::UnderlyerKey& key) const {
-        if constexpr (is_net_delta_metric<First>::value &&
-                      std::is_same_v<typename First::key_type, aggregation::UnderlyerKey>) {
-            return limits_.template get<First>().get_limit(key);
-        } else if constexpr (sizeof...(Rest) > 0) {
-            return get_net_delta_limit_impl<Rest...>(key);
-        } else {
-            return std::numeric_limits<double>::max();
-        }
-    }
-
-    double get_net_delta_limit_impl(const aggregation::UnderlyerKey&) const {
-        return std::numeric_limits<double>::max();
-    }
-
     // ========================================================================
-    // Generic Pre-Trade Check Implementation
+    // Pre-Trade Check Implementation
     // ========================================================================
 
     template<typename First, typename... Rest>
@@ -619,14 +224,6 @@ private:
     }
 
     // Helper to get provider pointer with correct type
-    template<typename P = Provider>
-    static constexpr std::enable_if_t<!std::is_void_v<P>, const P*>
-    get_provider_ptr_impl(const P* p) { return p; }
-
-    template<typename P = Provider>
-    static constexpr std::enable_if_t<std::is_void_v<P>, const void*>
-    get_provider_ptr_impl(std::nullptr_t) { return nullptr; }
-
     auto get_provider_ptr() const {
         if constexpr (std::is_void_v<Provider>) {
             return static_cast<const void*>(nullptr);

@@ -135,7 +135,7 @@ protected:
     void SetUp() override {
         provider = create_stock_provider();
         engine.set_instrument_provider(&provider);
-        engine.set_global_notional_limit(MAX_GROSS_NOTIONAL);
+        engine.set_limit<GlobalNotional>(GlobalKey::instance(), MAX_GROSS_NOTIONAL);
     }
 
     double gross_notional() const {

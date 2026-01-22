@@ -134,9 +134,10 @@ protected:
     static constexpr int64_t MAX_QUOTED_INSTRUMENTS = 2;
 
     void SetUp() override {
-        // Configure limits
-        engine.set_default_order_count_limit(MAX_OPEN_PER_SIDE);
-        engine.set_default_quoted_instruments_limit(MAX_QUOTED_INSTRUMENTS);
+        // Configure limits using generic API
+        engine.set_default_limit<OpenOrdersPerSide>(MAX_OPEN_PER_SIDE);
+        engine.set_default_limit<InFlightOrdersPerSide>(MAX_OPEN_PER_SIDE);
+        engine.set_default_limit<OpenQuotedInstruments>(MAX_QUOTED_INSTRUMENTS);
     }
 
     // Accessors
