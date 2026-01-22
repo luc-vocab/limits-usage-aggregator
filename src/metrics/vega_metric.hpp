@@ -5,6 +5,7 @@
 #include "../aggregation/key_extractors.hpp"
 #include "../instrument/instrument.hpp"
 #include <cmath>
+#include <unordered_map>
 
 // Forward declarations
 namespace engine {
@@ -14,6 +15,41 @@ namespace engine {
 }
 
 namespace metrics {
+
+// ============================================================================
+// StoredVegaInputs - Computation inputs for drift-free vega tracking
+// ============================================================================
+//
+// When we add a vega contribution for an order, we store the inputs used
+// to compute it. When removing, we use these stored inputs to compute exactly
+// what was added, preventing drift when underlyer spot/vega changes.
+//
+struct StoredVegaInputs {
+    int64_t quantity;
+    double vega;
+    double contract_size;
+    double underlyer_spot;
+    double fx_rate;
+    fix::Side side;  // For gross/net computation
+
+    double compute_exposure() const {
+        return static_cast<double>(quantity) * vega * contract_size * underlyer_spot * fx_rate;
+    }
+
+    double compute_gross() const {
+        return std::abs(compute_exposure());
+    }
+
+    double compute_net() const {
+        double exposure = compute_exposure();
+        return (side == fix::Side::BID) ? exposure : -exposure;
+    }
+
+    // For partial fills: create inputs for a portion of the stored quantity
+    StoredVegaInputs with_quantity(int64_t new_qty) const {
+        return StoredVegaInputs{new_qty, vega, contract_size, underlyer_spot, fx_rate, side};
+    }
+};
 
 // ============================================================================
 // GrossVegaMetric - Single-value metric tracking absolute vega exposure
@@ -94,9 +130,12 @@ public:
 private:
     struct StageData {
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> gross_vega;
+        // cl_ord_id -> (key, stored_inputs) for drift-free removal
+        std::unordered_map<std::string, std::pair<Key, StoredVegaInputs>> order_inputs;
 
         void clear() {
             gross_vega.clear();
+            order_inputs.clear();
         }
     };
 
@@ -111,6 +150,18 @@ private:
 
     Key extract_order_key(const engine::TrackedOrder& order) const {
         return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+    // Capture current inputs from context for drift-free storage
+    StoredVegaInputs capture_inputs(const Context& ctx, const Instrument& inst, int64_t quantity, fix::Side side) const {
+        return StoredVegaInputs{
+            quantity,
+            ctx.vega(inst),
+            ctx.contract_size(inst),
+            ctx.underlyer_spot(inst),
+            ctx.fx_rate(inst),
+            side
+        };
     }
 
 public:
@@ -153,60 +204,98 @@ public:
     void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(context, instrument, order.leaves_qty);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
+            // Capture and store inputs for drift-free removal
+            StoredVegaInputs inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double gross = inputs.compute_gross();
             stage_data->gross_vega.add(key, gross);
+            stage_data->order_inputs[order.key.cl_ord_id] = {key, inputs};
         }
     }
 
     void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double gross = compute_gross(context, instrument, order.leaves_qty);
+        (void)instrument;  // Unused - we use stored inputs
+        (void)context;     // Unused - we use stored inputs
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        // Use stored inputs for drift-free removal
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            Key key = it->second.first;
+            double gross = it->second.second.compute_gross();
             stage_data->gross_vega.remove(key, gross);
+            stage_data->order_inputs.erase(it);
         }
     }
 
     void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_gross = compute_gross(context, instrument, old_qty);
-        double new_gross = compute_gross(context, instrument, order.leaves_qty);
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        Key key = extract_order_key(order);
+
+        // Remove old contribution using stored inputs (or fallback to old_qty if key changed)
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            double old_gross = it->second.second.compute_gross();
             stage_data->gross_vega.remove(key, old_gross);
-            stage_data->gross_vega.add(key, new_gross);
+            stage_data->order_inputs.erase(it);
+        } else {
+            // Fallback for key change during replace: use old_qty with current context
+            double old_gross = compute_gross(context, instrument, old_qty);
+            stage_data->gross_vega.remove(key, old_gross);
         }
+
+        // Add new contribution with current inputs
+        StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+        double new_gross = new_inputs.compute_gross();
+        stage_data->gross_vega.add(key, new_gross);
+        stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 
     void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(context, instrument, filled_qty);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
-            open_data->gross_vega.remove(key, filled_gross);
+            // Use stored inputs for drift-free removal (proportional)
+            auto it = open_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != open_data->order_inputs.end()) {
+                StoredVegaInputs& stored = it->second.second;
+                StoredVegaInputs filled_inputs = stored.with_quantity(filled_qty);
+                double filled_gross = filled_inputs.compute_gross();
+                open_data->gross_vega.remove(key, filled_gross);
+                stored.quantity -= filled_qty;  // Update stored quantity
+            }
         }
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
-            pos_data->gross_vega.add(key, filled_gross);
+            // Add to position with CURRENT inputs
+            StoredVegaInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double pos_gross = pos_inputs.compute_gross();
+            pos_data->gross_vega.add(key, pos_gross);
         }
     }
 
     void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(context, instrument, filled_qty);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
+            // Add to position with CURRENT inputs
+            StoredVegaInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double filled_gross = pos_inputs.compute_gross();
             pos_data->gross_vega.add(key, filled_gross);
         }
     }
@@ -218,19 +307,29 @@ public:
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
-        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
-            Key key = extract_order_key(order);
-            double gross = compute_gross(context, instrument, order.leaves_qty);
+        if (old_stage == new_stage) return;
+        if (!aggregation::is_active_order_state(new_state)) return;
 
-            auto* old_data = storage_.get_stage(old_stage);
-            auto* new_data = storage_.get_stage(new_stage);
+        Key key = extract_order_key(order);
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
 
-            if (old_data) {
-                old_data->gross_vega.remove(key, gross);
+        // Remove from old stage using stored inputs
+        if (old_data) {
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_gross = it->second.second.compute_gross();
+                old_data->gross_vega.remove(key, old_gross);
+                old_data->order_inputs.erase(it);
             }
-            if (new_data) {
-                new_data->gross_vega.add(key, gross);
-            }
+        }
+
+        // Add to new stage with CURRENT inputs
+        if (new_data) {
+            StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_gross = new_inputs.compute_gross();
+            new_data->gross_vega.add(key, new_gross);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -239,21 +338,34 @@ public:
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_gross = compute_gross(context, instrument, old_qty);
-        double new_gross = compute_gross(context, instrument, order.leaves_qty);
 
+        Key key = extract_order_key(order);
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
         auto* old_data = storage_.get_stage(old_stage);
         auto* new_data = storage_.get_stage(new_stage);
 
+        // Remove from old stage using stored inputs (or fallback to old_qty if key changed)
         if (old_data) {
-            old_data->gross_vega.remove(key, old_gross);
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_gross = it->second.second.compute_gross();
+                old_data->gross_vega.remove(key, old_gross);
+                old_data->order_inputs.erase(it);
+            } else {
+                // Fallback for key change during replace: use old_qty with current context
+                double old_gross = compute_gross(context, instrument, old_qty);
+                old_data->gross_vega.remove(key, old_gross);
+            }
         }
+
+        // Add to new stage with CURRENT inputs
         if (new_data) {
+            StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_gross = new_inputs.compute_gross();
             new_data->gross_vega.add(key, new_gross);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -345,9 +457,12 @@ public:
 private:
     struct StageData {
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> net_vega;
+        // cl_ord_id -> (key, stored_inputs) for drift-free removal
+        std::unordered_map<std::string, std::pair<Key, StoredVegaInputs>> order_inputs;
 
         void clear() {
             net_vega.clear();
+            order_inputs.clear();
         }
     };
 
@@ -362,6 +477,18 @@ private:
 
     Key extract_order_key(const engine::TrackedOrder& order) const {
         return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+    // Capture current inputs from context for drift-free storage
+    StoredVegaInputs capture_inputs(const Context& ctx, const Instrument& inst, int64_t quantity, fix::Side side) const {
+        return StoredVegaInputs{
+            quantity,
+            ctx.vega(inst),
+            ctx.contract_size(inst),
+            ctx.underlyer_spot(inst),
+            ctx.fx_rate(inst),
+            side
+        };
     }
 
 public:
@@ -404,60 +531,98 @@ public:
     void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(context, instrument, order.leaves_qty, order.side);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
+            // Capture and store inputs for drift-free removal
+            StoredVegaInputs inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double net = inputs.compute_net();
             stage_data->net_vega.add(key, net);
+            stage_data->order_inputs[order.key.cl_ord_id] = {key, inputs};
         }
     }
 
     void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double net = compute_net(context, instrument, order.leaves_qty, order.side);
+        (void)instrument;  // Unused - we use stored inputs
+        (void)context;     // Unused - we use stored inputs
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        // Use stored inputs for drift-free removal
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            Key key = it->second.first;
+            double net = it->second.second.compute_net();
             stage_data->net_vega.remove(key, net);
+            stage_data->order_inputs.erase(it);
         }
     }
 
     void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_net = compute_net(context, instrument, old_qty, order.side);
-        double new_net = compute_net(context, instrument, order.leaves_qty, order.side);
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        Key key = extract_order_key(order);
+
+        // Remove old contribution using stored inputs (or fallback to old_qty if key changed)
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            double old_net = it->second.second.compute_net();
             stage_data->net_vega.remove(key, old_net);
-            stage_data->net_vega.add(key, new_net);
+            stage_data->order_inputs.erase(it);
+        } else {
+            // Fallback for key change during replace: use old_qty with current context
+            double old_net = compute_net(context, instrument, old_qty, order.side);
+            stage_data->net_vega.remove(key, old_net);
         }
+
+        // Add new contribution with current inputs
+        StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+        double new_net = new_inputs.compute_net();
+        stage_data->net_vega.add(key, new_net);
+        stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 
     void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(context, instrument, filled_qty, order.side);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
-            open_data->net_vega.remove(key, filled_net);
+            // Use stored inputs for drift-free removal (proportional)
+            auto it = open_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != open_data->order_inputs.end()) {
+                StoredVegaInputs& stored = it->second.second;
+                StoredVegaInputs filled_inputs = stored.with_quantity(filled_qty);
+                double filled_net = filled_inputs.compute_net();
+                open_data->net_vega.remove(key, filled_net);
+                stored.quantity -= filled_qty;  // Update stored quantity
+            }
         }
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
-            pos_data->net_vega.add(key, filled_net);
+            // Add to position with CURRENT inputs
+            StoredVegaInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double pos_net = pos_inputs.compute_net();
+            pos_data->net_vega.add(key, pos_net);
         }
     }
 
     void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(context, instrument, filled_qty, order.side);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
+            // Add to position with CURRENT inputs
+            StoredVegaInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double filled_net = pos_inputs.compute_net();
             pos_data->net_vega.add(key, filled_net);
         }
     }
@@ -469,19 +634,29 @@ public:
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
-        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
-            Key key = extract_order_key(order);
-            double net = compute_net(context, instrument, order.leaves_qty, order.side);
+        if (old_stage == new_stage) return;
+        if (!aggregation::is_active_order_state(new_state)) return;
 
-            auto* old_data = storage_.get_stage(old_stage);
-            auto* new_data = storage_.get_stage(new_stage);
+        Key key = extract_order_key(order);
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
 
-            if (old_data) {
-                old_data->net_vega.remove(key, net);
+        // Remove from old stage using stored inputs
+        if (old_data) {
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_net = it->second.second.compute_net();
+                old_data->net_vega.remove(key, old_net);
+                old_data->order_inputs.erase(it);
             }
-            if (new_data) {
-                new_data->net_vega.add(key, net);
-            }
+        }
+
+        // Add to new stage with CURRENT inputs
+        if (new_data) {
+            StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_net = new_inputs.compute_net();
+            new_data->net_vega.add(key, new_net);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -490,21 +665,34 @@ public:
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_net = compute_net(context, instrument, old_qty, order.side);
-        double new_net = compute_net(context, instrument, order.leaves_qty, order.side);
 
+        Key key = extract_order_key(order);
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
         auto* old_data = storage_.get_stage(old_stage);
         auto* new_data = storage_.get_stage(new_stage);
 
+        // Remove from old stage using stored inputs (or fallback to old_qty if key changed)
         if (old_data) {
-            old_data->net_vega.remove(key, old_net);
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_net = it->second.second.compute_net();
+                old_data->net_vega.remove(key, old_net);
+                old_data->order_inputs.erase(it);
+            } else {
+                // Fallback for key change during replace: use old_qty with current context
+                double old_net = compute_net(context, instrument, old_qty, order.side);
+                old_data->net_vega.remove(key, old_net);
+            }
         }
+
+        // Add to new stage with CURRENT inputs
         if (new_data) {
+            StoredVegaInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_net = new_inputs.compute_net();
             new_data->net_vega.add(key, new_net);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 

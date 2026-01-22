@@ -18,6 +18,49 @@ namespace engine {
 namespace metrics {
 
 // ============================================================================
+// StoredNotionalInputs - Computation inputs for drift-free notional tracking
+// ============================================================================
+//
+// When we add a notional contribution for an order, we store the inputs used
+// to compute it. When removing, we use these stored inputs to compute exactly
+// what was added, preventing drift when spot prices change between operations.
+//
+struct StoredNotionalInputs {
+    int64_t quantity;
+    double contract_size;
+    double spot_price;
+    double fx_rate;
+
+    double compute() const {
+        return static_cast<double>(quantity) * contract_size * spot_price * fx_rate;
+    }
+
+    // For partial fills: create inputs for a portion of the stored quantity
+    StoredNotionalInputs with_quantity(int64_t new_qty) const {
+        return StoredNotionalInputs{new_qty, contract_size, spot_price, fx_rate};
+    }
+};
+
+// StoredNetNotionalInputs - includes side for net (signed) notional computation
+struct StoredNetNotionalInputs {
+    int64_t quantity;
+    double contract_size;
+    double spot_price;
+    double fx_rate;
+    fix::Side side;  // BID = positive, ASK = negative
+
+    double compute() const {
+        double notional = static_cast<double>(quantity) * contract_size * spot_price * fx_rate;
+        return (side == fix::Side::BID) ? notional : -notional;
+    }
+
+    // For partial fills: create inputs for a portion of the stored quantity
+    StoredNetNotionalInputs with_quantity(int64_t new_qty) const {
+        return StoredNetNotionalInputs{new_qty, contract_size, spot_price, fx_rate, side};
+    }
+};
+
+// ============================================================================
 // NotionalMetric - Single-purpose notional tracking at a specific grouping level
 // ============================================================================
 //
@@ -101,9 +144,11 @@ public:
     }
 
 private:
-    // Per-stage data: maps key -> notional value
+    // Per-stage data: maps key -> notional value, plus stored inputs per order
     struct StageData {
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> notional;
+        // cl_ord_id -> (key, stored_inputs) for drift-free removal
+        std::unordered_map<std::string, std::pair<Key, StoredNotionalInputs>> order_inputs;
 
         double get(const Key& key) const {
             return notional.get(key);
@@ -111,12 +156,24 @@ private:
 
         void clear() {
             notional.clear();
+            order_inputs.clear();
         }
     };
 
     using Storage = aggregation::StagedMetric<StageData, Stages...>;
 
     Storage storage_;
+
+    // Capture current inputs from context for drift-free storage
+    template<typename Ctx, typename Inst>
+    StoredNotionalInputs capture_inputs(const Ctx& context, const Inst& instrument, int64_t quantity) const {
+        return StoredNotionalInputs{
+            quantity,
+            context.contract_size(instrument),
+            context.spot_price(instrument),
+            context.fx_rate(instrument)
+        };
+    }
 
 public:
     // ========================================================================
@@ -306,10 +363,13 @@ private:
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> gross_notional;
         // Track quantities per instrument for position recomputation
         std::unordered_map<std::string, int64_t> instrument_quantities;
+        // cl_ord_id -> (key, stored_inputs) for drift-free removal
+        std::unordered_map<std::string, std::pair<Key, StoredNotionalInputs>> order_inputs;
 
         void clear() {
             gross_notional.clear();
             instrument_quantities.clear();
+            order_inputs.clear();
         }
     };
 
@@ -327,6 +387,16 @@ private:
 
     Key extract_order_key(const engine::TrackedOrder& order) const {
         return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+    // Capture current inputs from context for drift-free storage
+    StoredNotionalInputs capture_inputs(const Context& ctx, const Instrument& inst, int64_t quantity) const {
+        return StoredNotionalInputs{
+            quantity,
+            ctx.contract_size(inst),
+            ctx.spot_price(inst),
+            ctx.fx_rate(inst)
+        };
     }
 
 public:
@@ -397,60 +467,98 @@ public:
     void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double gross = compute_gross(order, instrument, context);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
+            // Capture and store inputs for drift-free removal
+            StoredNotionalInputs inputs = capture_inputs(context, instrument, order.leaves_qty);
+            double gross = std::abs(inputs.compute());
             stage_data->gross_notional.add(key, gross);
+            stage_data->order_inputs[order.key.cl_ord_id] = {key, inputs};
         }
     }
 
     void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double gross = compute_gross(order, instrument, context);
+        (void)instrument;  // Unused - we use stored inputs
+        (void)context;     // Unused - we use stored inputs
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        // Use stored inputs for drift-free removal
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            Key key = it->second.first;
+            double gross = std::abs(it->second.second.compute());
             stage_data->gross_notional.remove(key, gross);
+            stage_data->order_inputs.erase(it);
         }
     }
 
     void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_gross = compute_gross(old_qty, instrument, context);
-        double new_gross = compute_gross(order, instrument, context);
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        Key key = extract_order_key(order);
+
+        // Remove old contribution using stored inputs (or fallback to old_qty if key changed)
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            double old_gross = std::abs(it->second.second.compute());
             stage_data->gross_notional.remove(key, old_gross);
-            stage_data->gross_notional.add(key, new_gross);
+            stage_data->order_inputs.erase(it);
+        } else {
+            // Fallback for key change during replace: use old_qty with current context
+            double old_gross = compute_gross(old_qty, instrument, context);
+            stage_data->gross_notional.remove(key, old_gross);
         }
+
+        // Add new contribution with current inputs
+        StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+        double new_gross = std::abs(new_inputs.compute());
+        stage_data->gross_notional.add(key, new_gross);
+        stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 
     void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(filled_qty, instrument, context);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
-            open_data->gross_notional.remove(key, filled_gross);
+            // Use stored inputs for drift-free removal (proportional)
+            auto it = open_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != open_data->order_inputs.end()) {
+                StoredNotionalInputs& stored = it->second.second;
+                StoredNotionalInputs filled_inputs = stored.with_quantity(filled_qty);
+                double filled_gross = std::abs(filled_inputs.compute());
+                open_data->gross_notional.remove(key, filled_gross);
+                stored.quantity -= filled_qty;  // Update stored quantity
+            }
         }
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
-            pos_data->gross_notional.add(key, filled_gross);
+            // Add to position with CURRENT inputs
+            StoredNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty);
+            double pos_gross = std::abs(pos_inputs.compute());
+            pos_data->gross_notional.add(key, pos_gross);
         }
     }
 
     void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_gross = compute_gross(filled_qty, instrument, context);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
+            // Add to position with CURRENT inputs
+            StoredNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty);
+            double filled_gross = std::abs(pos_inputs.compute());
             pos_data->gross_notional.add(key, filled_gross);
         }
     }
@@ -464,19 +572,29 @@ public:
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
-        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
-            Key key = extract_order_key(order);
-            double gross = compute_gross(order, instrument, context);
+        if (old_stage == new_stage) return;
+        if (!aggregation::is_active_order_state(new_state)) return;
 
-            auto* old_data = storage_.get_stage(old_stage);
-            auto* new_data = storage_.get_stage(new_stage);
+        Key key = extract_order_key(order);
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
 
-            if (old_data) {
-                old_data->gross_notional.remove(key, gross);
+        // Remove from old stage using stored inputs
+        if (old_data) {
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_gross = std::abs(it->second.second.compute());
+                old_data->gross_notional.remove(key, old_gross);
+                old_data->order_inputs.erase(it);
             }
-            if (new_data) {
-                new_data->gross_notional.add(key, gross);
-            }
+        }
+
+        // Add to new stage with CURRENT inputs
+        if (new_data) {
+            StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+            double new_gross = std::abs(new_inputs.compute());
+            new_data->gross_notional.add(key, new_gross);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -487,21 +605,34 @@ public:
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_gross = compute_gross(old_qty, instrument, context);
-        double new_gross = compute_gross(order, instrument, context);
 
+        Key key = extract_order_key(order);
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
         auto* old_data = storage_.get_stage(old_stage);
         auto* new_data = storage_.get_stage(new_stage);
 
+        // Remove from old stage using stored inputs (or fallback to old_qty if key changed)
         if (old_data) {
-            old_data->gross_notional.remove(key, old_gross);
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_gross = std::abs(it->second.second.compute());
+                old_data->gross_notional.remove(key, old_gross);
+                old_data->order_inputs.erase(it);
+            } else {
+                // Fallback for key change during replace: use old_qty with current context
+                double old_gross = compute_gross(old_qty, instrument, context);
+                old_data->gross_notional.remove(key, old_gross);
+            }
         }
+
+        // Add to new stage with CURRENT inputs
         if (new_data) {
+            StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+            double new_gross = std::abs(new_inputs.compute());
             new_data->gross_notional.add(key, new_gross);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -587,10 +718,13 @@ private:
         aggregation::AggregationBucket<Key, aggregation::SumCombiner<double>> net_notional;
         // Track signed quantities per instrument for position recomputation
         std::unordered_map<std::string, int64_t> instrument_quantities;
+        // cl_ord_id -> (key, stored_inputs) for drift-free removal
+        std::unordered_map<std::string, std::pair<Key, StoredNetNotionalInputs>> order_inputs;
 
         void clear() {
             net_notional.clear();
             instrument_quantities.clear();
+            order_inputs.clear();
         }
     };
 
@@ -616,6 +750,17 @@ private:
 
     Key extract_order_key(const engine::TrackedOrder& order) const {
         return aggregation::KeyExtractor<Key>::extract(order);
+    }
+
+    // Capture current inputs from context for drift-free storage
+    StoredNetNotionalInputs capture_inputs(const Context& ctx, const Instrument& inst, int64_t quantity, fix::Side side) const {
+        return StoredNetNotionalInputs{
+            quantity,
+            ctx.contract_size(inst),
+            ctx.spot_price(inst),
+            ctx.fx_rate(inst),
+            side
+        };
     }
 
 public:
@@ -685,60 +830,98 @@ public:
     void on_order_added(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double net = compute_net(order, instrument, context);
         auto* stage_data = storage_.get_stage(aggregation::OrderStage::IN_FLIGHT);
         if (stage_data) {
+            // Capture and store inputs for drift-free removal
+            StoredNetNotionalInputs inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double net = inputs.compute();
             stage_data->net_notional.add(key, net);
+            stage_data->order_inputs[order.key.cl_ord_id] = {key, inputs};
         }
     }
 
     void on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double net = compute_net(order, instrument, context);
+        (void)instrument;  // Unused - we use stored inputs
+        (void)context;     // Unused - we use stored inputs
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        // Use stored inputs for drift-free removal
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            Key key = it->second.first;
+            double net = it->second.second.compute();
             stage_data->net_notional.remove(key, net);
+            stage_data->order_inputs.erase(it);
         }
     }
 
     void on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_net = compute_net(old_qty, order.side, instrument, context);
-        double new_net = compute_net(order, instrument, context);
+
         auto stage = aggregation::stage_from_order_state(order.state);
         auto* stage_data = storage_.get_stage(stage);
-        if (stage_data) {
+        if (!stage_data) return;
+
+        Key key = extract_order_key(order);
+
+        // Remove old contribution using stored inputs (or fallback to old_qty if key changed)
+        auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != stage_data->order_inputs.end()) {
+            double old_net = it->second.second.compute();
             stage_data->net_notional.remove(key, old_net);
-            stage_data->net_notional.add(key, new_net);
+            stage_data->order_inputs.erase(it);
+        } else {
+            // Fallback for key change during replace: use old_qty with current context
+            double old_net = compute_net(old_qty, order.side, instrument, context);
+            stage_data->net_notional.remove(key, old_net);
         }
+
+        // Add new contribution with current inputs
+        StoredNetNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+        double new_net = new_inputs.compute();
+        stage_data->net_notional.add(key, new_net);
+        stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 
     void on_partial_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(filled_qty, order.side, instrument, context);
 
         auto* open_data = storage_.get_stage(aggregation::OrderStage::OPEN);
         if (open_data) {
-            open_data->net_notional.remove(key, filled_net);
+            // Use stored inputs for drift-free removal (proportional)
+            auto it = open_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != open_data->order_inputs.end()) {
+                StoredNetNotionalInputs& stored = it->second.second;
+                StoredNetNotionalInputs filled_inputs = stored.with_quantity(filled_qty);
+                double filled_net = filled_inputs.compute();
+                open_data->net_notional.remove(key, filled_net);
+                stored.quantity -= filled_qty;  // Update stored quantity
+            }
         }
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
-            pos_data->net_notional.add(key, filled_net);
+            // Add to position with CURRENT inputs
+            StoredNetNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double pos_net = pos_inputs.compute();
+            pos_data->net_notional.add(key, pos_net);
         }
     }
 
     void on_full_fill(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t filled_qty) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
         Key key = extract_order_key(order);
-        double filled_net = compute_net(filled_qty, order.side, instrument, context);
 
         auto* pos_data = storage_.get_stage(aggregation::OrderStage::POSITION);
         if (pos_data) {
+            // Add to position with CURRENT inputs
+            StoredNetNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty, order.side);
+            double filled_net = pos_inputs.compute();
             pos_data->net_notional.add(key, filled_net);
         }
     }
@@ -752,19 +935,29 @@ public:
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
-        if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
-            Key key = extract_order_key(order);
-            double net = compute_net(order, instrument, context);
+        if (old_stage == new_stage) return;
+        if (!aggregation::is_active_order_state(new_state)) return;
 
-            auto* old_data = storage_.get_stage(old_stage);
-            auto* new_data = storage_.get_stage(new_stage);
+        Key key = extract_order_key(order);
+        auto* old_data = storage_.get_stage(old_stage);
+        auto* new_data = storage_.get_stage(new_stage);
 
-            if (old_data) {
-                old_data->net_notional.remove(key, net);
+        // Remove from old stage using stored inputs
+        if (old_data) {
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_net = it->second.second.compute();
+                old_data->net_notional.remove(key, old_net);
+                old_data->order_inputs.erase(it);
             }
-            if (new_data) {
-                new_data->net_notional.add(key, net);
-            }
+        }
+
+        // Add to new stage with CURRENT inputs
+        if (new_data) {
+            StoredNetNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_net = new_inputs.compute();
+            new_data->net_notional.add(key, new_net);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -775,21 +968,34 @@ public:
                                              engine::OrderState old_state,
                                              engine::OrderState new_state) {
         if (!aggregation::KeyExtractor<Key>::is_applicable(order)) return;
-        Key key = extract_order_key(order);
-        double old_net = compute_net(old_qty, order.side, instrument, context);
-        double new_net = compute_net(order, instrument, context);
 
+        Key key = extract_order_key(order);
         auto old_stage = aggregation::stage_from_order_state(old_state);
         auto new_stage = aggregation::stage_from_order_state(new_state);
 
         auto* old_data = storage_.get_stage(old_stage);
         auto* new_data = storage_.get_stage(new_stage);
 
+        // Remove from old stage using stored inputs (or fallback to old_qty if key changed)
         if (old_data) {
-            old_data->net_notional.remove(key, old_net);
+            auto it = old_data->order_inputs.find(order.key.cl_ord_id);
+            if (it != old_data->order_inputs.end()) {
+                double old_net = it->second.second.compute();
+                old_data->net_notional.remove(key, old_net);
+                old_data->order_inputs.erase(it);
+            } else {
+                // Fallback for key change during replace: use old_qty with current context
+                double old_net = compute_net(old_qty, order.side, instrument, context);
+                old_data->net_notional.remove(key, old_net);
+            }
         }
+
+        // Add to new stage with CURRENT inputs
         if (new_data) {
+            StoredNetNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty, order.side);
+            double new_net = new_inputs.compute();
             new_data->net_notional.add(key, new_net);
+            new_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
         }
     }
 
@@ -850,21 +1056,31 @@ void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_added(const e
 
     if constexpr (Config::track_in_flight) {
         Key key = extract_order_key(order);
-        double notional = compute_notional(instrument, context, order.leaves_qty);
+        // Capture and store inputs for drift-free removal
+        StoredNotionalInputs inputs = capture_inputs(context, instrument, order.leaves_qty);
+        double notional = inputs.compute();
         storage_.in_flight().notional.add(key, notional);
+        storage_.in_flight().order_inputs[order.key.cl_ord_id] = {key, inputs};
     }
 }
 
 template<typename Key, typename Context, typename Instrument, typename... Stages>
 void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_removed(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context) {
     if (!is_applicable(order)) return;
+    (void)instrument;  // Unused - we use stored inputs
+    (void)context;     // Unused - we use stored inputs
 
-    Key key = extract_order_key(order);
     auto stage = aggregation::stage_from_order_state(order.state);
     auto* stage_data = storage_.get_stage(stage);
-    if (stage_data) {
-        double notional = compute_notional(instrument, context, order.leaves_qty);
+    if (!stage_data) return;
+
+    // Use stored inputs for drift-free removal
+    auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+    if (it != stage_data->order_inputs.end()) {
+        Key key = it->second.first;
+        double notional = it->second.second.compute();
         stage_data->notional.remove(key, notional);
+        stage_data->order_inputs.erase(it);
     }
 }
 
@@ -872,15 +1088,29 @@ template<typename Key, typename Context, typename Instrument, typename... Stages
 void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_updated(const engine::TrackedOrder& order, const Instrument& instrument, const Context& context, int64_t old_qty) {
     if (!is_applicable(order)) return;
 
-    Key key = extract_order_key(order);
     auto stage = aggregation::stage_from_order_state(order.state);
     auto* stage_data = storage_.get_stage(stage);
-    if (stage_data) {
-        double old_notional = compute_notional(instrument, context, old_qty);
-        double new_notional = compute_notional(instrument, context, order.leaves_qty);
+    if (!stage_data) return;
+
+    Key key = extract_order_key(order);
+
+    // Remove old contribution using stored inputs (or fallback to old_qty if key changed)
+    auto it = stage_data->order_inputs.find(order.key.cl_ord_id);
+    if (it != stage_data->order_inputs.end()) {
+        double old_notional = it->second.second.compute();
         stage_data->notional.remove(key, old_notional);
-        stage_data->notional.add(key, new_notional);
+        stage_data->order_inputs.erase(it);
+    } else {
+        // Fallback for key change during replace: use old_qty with current context
+        double old_notional = compute_notional(instrument, context, old_qty);
+        stage_data->notional.remove(key, old_notional);
     }
+
+    // Add new contribution with current inputs
+    StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+    double new_notional = new_inputs.compute();
+    stage_data->notional.add(key, new_notional);
+    stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
 }
 
 template<typename Key, typename Context, typename Instrument, typename... Stages>
@@ -888,15 +1118,29 @@ void NotionalMetric<Key, Context, Instrument, Stages...>::on_partial_fill(const 
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
-    double fill_notional = compute_notional(instrument, context, filled_qty);
 
-    // Remove from open stage
+    // Remove filled portion from open stage using stored inputs (proportional)
     if constexpr (Config::track_open) {
-        storage_.open().notional.remove(key, fill_notional);
+        auto* open_data = &storage_.open();
+        auto it = open_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != open_data->order_inputs.end()) {
+            StoredNotionalInputs& stored = it->second.second;
+            // Compute filled notional using stored inputs (proportional)
+            StoredNotionalInputs filled_inputs = stored.with_quantity(filled_qty);
+            double filled_notional = filled_inputs.compute();
+            open_data->notional.remove(key, filled_notional);
+            // Update stored quantity for remaining order
+            stored.quantity -= filled_qty;
+        }
     }
-    // Add to position stage
+
+    // Add to position stage with CURRENT inputs
     if constexpr (Config::track_position) {
-        storage_.position().notional.add(key, fill_notional);
+        StoredNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty);
+        double pos_notional = pos_inputs.compute();
+        storage_.position().notional.add(key, pos_notional);
+        // Note: Position stage typically doesn't need per-order tracking
+        // as positions are aggregated and don't get "removed" in the same way
     }
 }
 
@@ -905,10 +1149,12 @@ void NotionalMetric<Key, Context, Instrument, Stages...>::on_full_fill(const eng
     if (!is_applicable(order)) return;
 
     Key key = extract_order_key(order);
-    double fill_notional = compute_notional(instrument, context, filled_qty);
 
-    // Add to position stage (removal from open/in_flight handled by on_order_removed)
+    // Add to position stage with CURRENT inputs
+    // (removal from open/in_flight handled by on_order_removed which uses stored inputs)
     if constexpr (Config::track_position) {
+        StoredNotionalInputs pos_inputs = capture_inputs(context, instrument, filled_qty);
+        double fill_notional = pos_inputs.compute();
         storage_.position().notional.add(key, fill_notional);
     }
 }
@@ -924,19 +1170,30 @@ void NotionalMetric<Key, Context, Instrument, Stages...>::on_state_change(const 
     auto old_stage = aggregation::stage_from_order_state(old_state);
     auto new_stage = aggregation::stage_from_order_state(new_state);
 
-    if (old_stage != new_stage && aggregation::is_active_order_state(new_state)) {
-        Key key = extract_order_key(order);
-        double notional = compute_notional(instrument, context, order.leaves_qty);
+    if (old_stage == new_stage) return;
+    if (!aggregation::is_active_order_state(new_state)) return;
 
-        auto* old_stage_data = storage_.get_stage(old_stage);
-        auto* new_stage_data = storage_.get_stage(new_stage);
+    auto* old_stage_data = storage_.get_stage(old_stage);
+    auto* new_stage_data = storage_.get_stage(new_stage);
 
-        if (old_stage_data) {
-            old_stage_data->notional.remove(key, notional);
+    Key key = extract_order_key(order);
+
+    // Remove from old stage using stored inputs
+    if (old_stage_data) {
+        auto it = old_stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != old_stage_data->order_inputs.end()) {
+            double old_notional = it->second.second.compute();
+            old_stage_data->notional.remove(key, old_notional);
+            old_stage_data->order_inputs.erase(it);
         }
-        if (new_stage_data) {
-            new_stage_data->notional.add(key, notional);
-        }
+    }
+
+    // Add to new stage with CURRENT inputs
+    if (new_stage_data) {
+        StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+        double new_notional = new_inputs.compute();
+        new_stage_data->notional.add(key, new_notional);
+        new_stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 }
 
@@ -954,18 +1211,31 @@ void NotionalMetric<Key, Context, Instrument, Stages...>::on_order_updated_with_
     auto old_stage = aggregation::stage_from_order_state(old_state);
     auto new_stage = aggregation::stage_from_order_state(new_state);
 
-    Key key = extract_order_key(order);
-    double old_notional = compute_notional(instrument, context, old_qty);
-    double new_notional = compute_notional(instrument, context, order.leaves_qty);
-
     auto* old_stage_data = storage_.get_stage(old_stage);
     auto* new_stage_data = storage_.get_stage(new_stage);
 
+    Key key = extract_order_key(order);
+
+    // Remove from old stage using stored inputs (or fallback to old_qty if key changed)
     if (old_stage_data) {
-        old_stage_data->notional.remove(key, old_notional);
+        auto it = old_stage_data->order_inputs.find(order.key.cl_ord_id);
+        if (it != old_stage_data->order_inputs.end()) {
+            double old_notional = it->second.second.compute();
+            old_stage_data->notional.remove(key, old_notional);
+            old_stage_data->order_inputs.erase(it);
+        } else {
+            // Fallback for key change during replace: use old_qty with current context
+            double old_notional = compute_notional(instrument, context, old_qty);
+            old_stage_data->notional.remove(key, old_notional);
+        }
     }
+
+    // Add to new stage with CURRENT inputs
     if (new_stage_data) {
+        StoredNotionalInputs new_inputs = capture_inputs(context, instrument, order.leaves_qty);
+        double new_notional = new_inputs.compute();
         new_stage_data->notional.add(key, new_notional);
+        new_stage_data->order_inputs[order.key.cl_ord_id] = {key, new_inputs};
     }
 }
 

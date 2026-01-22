@@ -6,6 +6,7 @@ cc_test(
         "fix_message_tests.cpp",
         "integration_test_order_count_by_instrument_side.cpp",
         "integration_test_gross_notional.cpp",
+        "integration_test_notional_drift.cpp",
         "integration_test_option_underlyer_refactored.cpp",
         "integration_test_options_gross_net_check.cpp",
         "integration_test_portfolio_instrument_notional.cpp",
