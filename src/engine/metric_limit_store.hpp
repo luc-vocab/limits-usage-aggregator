@@ -72,12 +72,7 @@ std::string key_to_string(const Key& key) {
 // Convert metric value to double for breach checking
 template<typename T>
 double to_double(const T& value) {
-    if constexpr (std::is_same_v<T, aggregation::DeltaValue>) {
-        // For DeltaValue, we return gross by default (net handled separately)
-        return value.gross;
-    } else {
-        return static_cast<double>(value);
-    }
+    return static_cast<double>(value);
 }
 
 } // namespace detail

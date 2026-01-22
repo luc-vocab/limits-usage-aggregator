@@ -67,44 +67,6 @@ struct MinCombiner {
 };
 
 // ============================================================================
-// Value types for specific metrics
-// ============================================================================
-
-// Delta value holding both gross and net
-struct DeltaValue {
-    double gross = 0.0;  // Absolute sum of all deltas
-    double net = 0.0;    // Signed sum of all deltas
-
-    DeltaValue() = default;
-    DeltaValue(double g, double n) : gross(g), net(n) {}
-
-    bool operator==(const DeltaValue& other) const {
-        return gross == other.gross && net == other.net;
-    }
-};
-
-// Combiner for delta values
-struct DeltaCombiner {
-    using value_type = DeltaValue;
-
-    static DeltaValue identity() { return DeltaValue{0.0, 0.0}; }
-
-    static DeltaValue combine(DeltaValue current, DeltaValue delta) {
-        return DeltaValue{
-            current.gross + delta.gross,
-            current.net + delta.net
-        };
-    }
-
-    static DeltaValue uncombine(DeltaValue current, DeltaValue delta) {
-        return DeltaValue{
-            current.gross - delta.gross,
-            current.net - delta.net
-        };
-    }
-};
-
-// ============================================================================
 // Type traits for aggregation
 // ============================================================================
 
