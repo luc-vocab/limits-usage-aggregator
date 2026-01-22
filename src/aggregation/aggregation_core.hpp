@@ -145,26 +145,5 @@ public:
     }
 };
 
-// ============================================================================
-// Type aliases for common aggregation patterns
-// ============================================================================
-
-// Global delta tracking (gross and net)
-using GlobalDeltaBucket = AggregationBucket<GlobalKey, DeltaCombiner>;
-
-// Per-underlyer delta tracking
-using UnderlyerDeltaBucket = AggregationBucket<UnderlyerKey, DeltaCombiner>;
-
-// Per-instrument order count
-using InstrumentOrderCountBucket = AggregationBucket<InstrumentSideKey, CountCombiner>;
-
-// Per-underlyer quoted instrument count
-using UnderlyerInstrumentCountBucket = AggregationBucket<UnderlyerKey, CountCombiner>;
-
-// Per-strategy notional
-using StrategyNotionalBucket = AggregationBucket<StrategyKey, SumCombiner<double>>;
-
-// Per-portfolio notional
-using PortfolioNotionalBucket = AggregationBucket<PortfolioKey, SumCombiner<double>>;
 
 } // namespace aggregation
