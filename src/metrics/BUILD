@@ -7,7 +7,9 @@ cc_library(
     hdrs = [
         "delta_metrics.hpp",
         "notional_metrics.hpp",
+        "notional_metric.hpp",
         "order_count_metrics.hpp",
+        "order_count_metric.hpp",
     ],
     deps = [
         "//src/aggregation",

@@ -14,7 +14,6 @@ cc_library(
     name = "order_state",
     hdrs = ["order_state.hpp"],
     deps = [
-        "//src/aggregation",
         "//src/fix",
     ],
 )

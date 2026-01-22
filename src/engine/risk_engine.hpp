@@ -8,6 +8,10 @@
 #include "../metrics/order_count_metrics.hpp"
 #include "../metrics/notional_metrics.hpp"
 
+// Include new single-purpose metrics
+#include "../metrics/order_count_metric.hpp"
+#include "../metrics/notional_metric.hpp"
+
 namespace engine {
 
 // ============================================================================
@@ -116,5 +120,28 @@ using StagedNotionalOnlyEngine = GenericRiskAggregationEngine<
     Provider,
     metrics::NotionalMetrics<Provider, Stages...>
 >;
+
+// ============================================================================
+// Single-purpose metric type aliases (new generic interface)
+// ============================================================================
+//
+// These use the new single-purpose metrics that track ONE grouping level
+// and specify stages via template parameters.
+//
+
+// Order count metrics - count orders per key
+template<typename... Stages>
+using OpenInstrumentSideOrderCount = metrics::OrderCountMetric<aggregation::InstrumentSideKey, Stages...>;
+
+template<typename... Stages>
+using InFlightInstrumentSideOrderCount = metrics::OrderCountMetric<aggregation::InstrumentSideKey, Stages...>;
+
+// Quoted instrument count metric - count unique instruments per underlyer
+template<typename... Stages>
+using OpenQuotedInstrumentCount = metrics::QuotedInstrumentCountMetric<Stages...>;
+
+// Global notional metric
+template<typename Provider, typename... Stages>
+using OpenGlobalNotional = metrics::GlobalNotionalMetric<Provider, Stages...>;
 
 } // namespace engine

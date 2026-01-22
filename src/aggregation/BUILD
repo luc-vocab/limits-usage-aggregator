@@ -8,6 +8,10 @@ cc_library(
         "aggregation_core.hpp",
         "aggregation_traits.hpp",
         "grouping.hpp",
+        "staged_metric.hpp",
+    ],
+    deps = [
+        ":order_stage",
     ],
 )
 

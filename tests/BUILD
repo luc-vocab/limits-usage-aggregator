@@ -7,6 +7,9 @@ cc_test(
         "aggregation_tests.cpp",
         "integration_tests.cpp",
         "integration_test_option_underlyer_count.cpp",
+        "integration_test_order_count_by_instrument_side.cpp",
+        "integration_test_gross_notional.cpp",
+        "integration_test_option_underlyer_refactored.cpp",
     ],
     deps = [
         "//src/aggregation",
